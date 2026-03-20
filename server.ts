@@ -1,6 +1,18 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 
+import axios from 'axios';
+
+async function getPublicIP(): Promise<string> {
+  try {
+    const res = await axios.get('https://api.ipify.org?format=json');
+    return res.data.ip;
+  } catch (err) {
+    console.error('获取公网IP失败', err);
+    return 'unknown';
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -18,52 +30,15 @@ async function startServer() {
   });
 
   app.get("/api/ip", async (req, res) => {
-    console.log('[/api/ip] Fetching server IP...');
-    const services = [
-      'https://api.ipify.org?format=json',
-      'http://api.ipify.org?format=json',
-      'https://api64.ipify.org?format=json',
-      'http://api64.ipify.org?format=json',
-      'https://ifconfig.me/all.json',
-      'https://ipapi.co/json/',
-      'https://api.myip.com'
-    ];
-
-    for (const service of services) {
-      try {
-        console.log(`[/api/ip] Trying IP service: ${service}`);
-        const response = await fetch(service, {
-          headers: { 
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'application/json'
-          },
-          signal: AbortSignal.timeout(10000)
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          console.log(`[/api/ip] Raw data from ${service}:`, data);
-          const ip = data.ip || data.ip_addr || data.query || data.ip_address;
-          if (ip) {
-            console.log(`[/api/ip] Successfully fetched IP: ${ip} from ${service}`);
-            return res.json({ ip });
-          }
-        } else {
-          console.error(`[/api/ip] Service ${service} returned status: ${response.status}`);
-        }
-      } catch (e: any) {
-        console.error(`[/api/ip] Failed to fetch IP from ${service}: ${e.message}`);
-      }
-    }
-
-    console.error('[/api/ip] All IP services failed');
-    res.status(500).json({ error: 'Failed to fetch IP from all services' });
+    const ip = await getPublicIP();
+    console.log('[/api/ip] Server Public IP:', ip);
+    res.json({ ip });
   });
 
   app.post("/api/proxy", async (req, res) => {
     const { url, method, headers, body } = req.body;
     try {
-      // Clean up headers to avoid issues with host or other restricted headers
+      // Clean up headers
       const cleanHeaders: Record<string, string> = {};
       if (headers) {
         Object.entries(headers).forEach(([key, val]) => {
@@ -74,21 +49,18 @@ async function startServer() {
         });
       }
 
-      const response = await fetch(url, {
+      const response = await axios({
+        url,
         method,
         headers: cleanHeaders,
-        body: method !== 'GET' && body ? JSON.stringify(body) : undefined
+        data: body,
+        timeout: 15000,
+        validateStatus: () => true // Allow any status code to be returned to client
       });
       
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        const data = await response.json();
-        res.status(response.status).json(data);
-      } else {
-        const text = await response.text();
-        res.status(response.status).json({ error: `Non-JSON response from Binance (${response.status})`, details: text.slice(0, 500) });
-      }
+      res.status(response.status).json(response.data);
     } catch (e: any) {
+      console.error(`[/api/proxy] Proxy error for ${url}:`, e.message);
       res.status(500).json({ error: e.message });
     }
   });
@@ -136,9 +108,13 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, "0.0.0.0", async () => {
     console.log(`Server is listening on 0.0.0.0:${PORT}`);
     console.log(`External access is available via the provided App URL.`);
+    
+    // 获取并打印公网 IP
+    const ip = await getPublicIP();
+    console.log('服务器公网 IP:', ip);
   });
 }
 

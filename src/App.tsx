@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
 import { Layout } from './components/Layout';
 import { Dashboard } from './components/Dashboard';
 import { ScannerView } from './components/ScannerView';
@@ -110,9 +111,8 @@ export default function App() {
     const binance = new BinanceService(settings.binance.apiKey, settings.binance.secretKey, settings.binance.baseUrl);
     
     // Test backend connectivity
-    fetch('/api/test')
-      .then(res => res.json())
-      .then(data => console.log('Backend test response:', data))
+    axios.get('/api/test')
+      .then(res => console.log('Backend test response:', res.data))
       .catch(err => console.error('Backend test failed:', err));
 
     const fetchIp = async (retryCount = 0) => {
@@ -132,11 +132,10 @@ export default function App() {
     
     fetchIp();
     
-    fetch('https://api.ipify.org?format=json')
-      .then(res => res.json())
-      .then(data => {
-        console.log('Local IP fetched:', data.ip);
-        setLocalIp(data.ip);
+    axios.get('https://api.ipify.org?format=json')
+      .then(res => {
+        console.log('Local IP fetched:', res.data.ip);
+        setLocalIp(res.data.ip);
       })
       .catch((err) => {
         console.error('Local IP fetch failed:', err);

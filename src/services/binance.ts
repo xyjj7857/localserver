@@ -1,4 +1,5 @@
 import CryptoJS from 'crypto-js';
+import axios from 'axios';
 
 export class BinanceService {
   private apiKey: string;
@@ -23,27 +24,13 @@ export class BinanceService {
       const start = Date.now();
       const url = `${this.baseUrl}/fapi/v1/time`;
       let data;
-      let response;
 
       if (this.ipSelection === 'proxy') {
-        response = await fetch('/api/proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, method: 'GET' })
-        });
+        const response = await axios.post('/api/proxy', { url, method: 'GET' });
+        data = response.data;
       } else {
-        response = await fetch(url);
-      }
-
-      if (!response.ok) {
-        throw new Error(`Failed to sync time: ${response.status}`);
-      }
-
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        data = await response.json();
-      } else {
-        throw new Error('Non-JSON response during time sync');
+        const response = await axios.get(url);
+        data = response.data;
       }
 
       const end = Date.now();
@@ -84,63 +71,44 @@ export class BinanceService {
     };
     
     try {
-      let response;
       let data;
 
-      const fetchOptions: any = {
-        method,
-        headers,
-      };
-      if (method !== 'GET' && params && Object.keys(params).length > 0 && !signed) {
-        // For non-signed POST/PUT, we might need body, but Binance usually uses query params for FAPI
-      }
-
       if (this.ipSelection === 'proxy') {
-        response = await fetch('/api/proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, method, headers })
+        const response = await axios.post('/api/proxy', { url, method, headers });
+        data = response.data;
+      } else {
+        const response = await axios({
+          url,
+          method,
+          headers,
+          timeout: 15000
         });
-      } else {
-        response = await fetch(url, fetchOptions);
+        data = response.data;
       }
 
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        data = await response.json();
-      } else {
-        const text = await response.text();
-        const isHtml = text.trim().toLowerCase().startsWith('<!doctype html') || text.trim().toLowerCase().startsWith('<html');
-        if (isHtml) {
-          if (this.ipSelection === 'local' && !params._isRetry) {
-            console.warn('HTML response received on local, retrying with proxy...');
-            this.ipSelection = 'proxy';
-            return this.request(method, path, { ...params, _isRetry: true }, signed);
-          }
-          throw new Error(`Binance API 返回了 HTML 响应 (${response.status})。这通常是因为请求被拦截或重定向。请在设置中确保 "IP 选择" 已设置为 "服务器代理 (Proxy)"。`);
-        }
-        throw new Error(`Binance API returned non-JSON response (${response.status}): ${text.slice(0, 100)}...`);
-      }
+      return data;
+    } catch (e: any) {
+      // Handle axios error response
+      const errorData = e.response?.data;
+      const status = e.response?.status;
 
-      if (!response.ok) {
+      if (errorData) {
         // Handle recvWindow error by re-syncing and retrying once
-        if (data && data.code === -1021 && !params._isRetry) {
+        if (errorData.code === -1021 && !params._isRetry) {
           console.warn('Timestamp error detected, re-syncing time and retrying...');
           await this.syncTime();
           return this.request(method, path, { ...params, _isRetry: true }, signed);
         }
 
-        if (data && data.code === -2015) {
+        if (errorData.code === -2015) {
           const serverIp = this.ipSelection === 'proxy' ? await this.getIp() : '本地 IP';
           throw new Error(`币安 API 权限/IP 错误: 请确保已在币安 API 设置中勾选 "允许合约" 权限。如果开启了 IP 限制，请将当前请求 IP (${serverIp}) 加入白名单。`);
         }
 
-        throw new Error(data.msg || `Binance API Error (${response.status})`);
+        throw new Error(errorData.msg || `Binance API Error (${status})`);
       }
 
-      return data;
-    } catch (e: any) {
-      if (e.message.includes('Failed to fetch') && !params._isRetry) {
+      if (!params._isRetry) {
         console.warn('Network error detected, retrying once...');
         if (this.ipSelection === 'local') {
           console.warn('Switching to proxy for retry...');
@@ -149,6 +117,7 @@ export class BinanceService {
         await new Promise(resolve => setTimeout(resolve, 1000));
         return this.request(method, path, { ...params, _isRetry: true }, signed);
       }
+      
       console.error('Binance Request Failed:', e);
       throw e;
     }
@@ -237,23 +206,8 @@ export class BinanceService {
     // Fetch from our own backend to get server IP (always useful for whitelisting)
     try {
       console.log('Fetching server IP from /api/ip...');
-      const res = await fetch('/api/ip');
-      const text = await res.text();
-      console.log('Server IP raw response:', text);
-      
-      if (!res.ok) {
-        console.error(`Failed to fetch IP: ${res.status} ${res.statusText}`);
-        return 'Unknown';
-      }
-      
-      try {
-        const data = JSON.parse(text);
-        console.log('Server IP parsed response:', data);
-        return data.ip || 'Unknown';
-      } catch (jsonErr) {
-        console.error('Failed to parse IP response as JSON:', text);
-        return 'Unknown';
-      }
+      const res = await axios.get('/api/ip');
+      return res.data.ip || 'Unknown';
     } catch (e: any) {
       console.error('Error fetching server IP:', e.message);
       return 'Unknown';

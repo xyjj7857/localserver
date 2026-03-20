@@ -236,10 +236,26 @@ export class BinanceService {
   async getIp() {
     // Fetch from our own backend to get server IP (always useful for whitelisting)
     try {
+      console.log('Fetching server IP from /api/ip...');
       const res = await fetch('/api/ip');
-      const data = await res.json();
-      return data.ip || 'Unknown';
-    } catch (e) {
+      const text = await res.text();
+      console.log('Server IP raw response:', text);
+      
+      if (!res.ok) {
+        console.error(`Failed to fetch IP: ${res.status} ${res.statusText}`);
+        return 'Unknown';
+      }
+      
+      try {
+        const data = JSON.parse(text);
+        console.log('Server IP parsed response:', data);
+        return data.ip || 'Unknown';
+      } catch (jsonErr) {
+        console.error('Failed to parse IP response as JSON:', text);
+        return 'Unknown';
+      }
+    } catch (e: any) {
+      console.error('Error fetching server IP:', e.message);
       return 'Unknown';
     }
   }

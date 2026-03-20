@@ -111,7 +111,9 @@ export class StrategyEngine {
     if (this.mainLoopInterval || this.isStopped) return; // Already started or stopped
     
     // Fetch initial IP
+    console.log('[StrategyEngine] Fetching initial IP...');
     this.binance.getIp().then(ip => {
+      console.log('[StrategyEngine] Initial IP fetched:', ip);
       this.ip = ip;
       this.notifyUI();
     });

@@ -12,14 +12,52 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
+  app.get("/api/test", (req, res) => {
+    console.log('Test endpoint hit');
+    res.json({ message: "Backend is reachable", time: new Date().toISOString() });
+  });
+
   app.get("/api/ip", async (req, res) => {
-    try {
-      const response = await fetch('https://api.ipify.org?format=json');
-      const data = await response.json();
-      res.json(data);
-    } catch (e) {
-      res.status(500).json({ error: 'Failed to fetch IP' });
+    console.log('[/api/ip] Fetching server IP...');
+    const services = [
+      'https://api.ipify.org?format=json',
+      'http://api.ipify.org?format=json',
+      'https://api64.ipify.org?format=json',
+      'http://api64.ipify.org?format=json',
+      'https://ifconfig.me/all.json',
+      'https://ipapi.co/json/',
+      'https://api.myip.com'
+    ];
+
+    for (const service of services) {
+      try {
+        console.log(`[/api/ip] Trying IP service: ${service}`);
+        const response = await fetch(service, {
+          headers: { 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json'
+          },
+          signal: AbortSignal.timeout(10000)
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          console.log(`[/api/ip] Raw data from ${service}:`, data);
+          const ip = data.ip || data.ip_addr || data.query || data.ip_address;
+          if (ip) {
+            console.log(`[/api/ip] Successfully fetched IP: ${ip} from ${service}`);
+            return res.json({ ip });
+          }
+        } else {
+          console.error(`[/api/ip] Service ${service} returned status: ${response.status}`);
+        }
+      } catch (e: any) {
+        console.error(`[/api/ip] Failed to fetch IP from ${service}: ${e.message}`);
+      }
     }
+
+    console.error('[/api/ip] All IP services failed');
+    res.status(500).json({ error: 'Failed to fetch IP from all services' });
   });
 
   app.post("/api/proxy", async (req, res) => {
@@ -99,7 +137,8 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server is listening on 0.0.0.0:${PORT}`);
+    console.log(`External access is available via the provided App URL.`);
   });
 }
 

@@ -108,12 +108,40 @@ export default function App() {
 
     // Fetch IPs
     const binance = new BinanceService(settings.binance.apiKey, settings.binance.secretKey, settings.binance.baseUrl);
-    binance.getIp().then(setIp);
+    
+    // Test backend connectivity
+    fetch('/api/test')
+      .then(res => res.json())
+      .then(data => console.log('Backend test response:', data))
+      .catch(err => console.error('Backend test failed:', err));
+
+    const fetchIp = async (retryCount = 0) => {
+      try {
+        const ip = await binance.getIp();
+        console.log(`Fetched server IP (attempt ${retryCount + 1}):`, ip);
+        if (ip !== 'Unknown') {
+          setIp(ip);
+        } else if (retryCount < 3) {
+          console.warn('Server IP is Unknown, retrying in 2s...');
+          setTimeout(() => fetchIp(retryCount + 1), 2000);
+        }
+      } catch (err) {
+        console.error('Error in fetchIp:', err);
+      }
+    };
+    
+    fetchIp();
     
     fetch('https://api.ipify.org?format=json')
       .then(res => res.json())
-      .then(data => setLocalIp(data.ip))
-      .catch(() => setLocalIp('获取失败'));
+      .then(data => {
+        console.log('Local IP fetched:', data.ip);
+        setLocalIp(data.ip);
+      })
+      .catch((err) => {
+        console.error('Local IP fetch failed:', err);
+        setLocalIp('获取失败');
+      });
 
     return () => {
       if (engineRef.current) {

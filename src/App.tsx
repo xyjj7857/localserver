@@ -15,11 +15,11 @@ import { AppSettings, LogEntry } from './types';
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => {
     const s = StorageService.getSettings();
-    s.masterSwitch = false; // 启动时先关闭，同步后再开启
-    return s;
+    // 启动时先关闭，同步后再开启
+    return { ...s, masterSwitch: false };
   });
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [isLocked, setIsLocked] = useState(true);
+  const [isLocked, setIsLocked] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>(StorageService.getLogs());
   const [ip, setIp] = useState('加载中...');
   const [localIp, setLocalIp] = useState('加载中...');
@@ -60,8 +60,19 @@ export default function App() {
   const engineRef = useRef<StrategyEngine | null>(null);
   const lockTimerRef = useRef<any>(null);
 
-  // Auto-pull from Supabase on mount
+  // Initialize Strategy Engine and Auto-pull from Supabase
   useEffect(() => {
+    const engine = new StrategyEngine(settings, (state) => {
+      setEngineState((prev: any) => ({ ...prev, ...state }));
+      if (state.ip) setIp(state.ip);
+      // Sync logs when they change (StorageService adds them, but we need to update UI)
+      setLogs(StorageService.getLogs());
+    });
+    
+    engineRef.current = engine;
+    engine.start();
+
+    // Pull from Supabase and auto-start
     const pullRemoteSettings = async () => {
       try {
         const remoteSettings = await SupabaseService.pullSettings(settings);
@@ -69,9 +80,7 @@ export default function App() {
           // 1. 同步配置
           setSettings(remoteSettings);
           StorageService.saveSettings(remoteSettings);
-          if (engineRef.current) {
-            engineRef.current.updateSettings(remoteSettings);
-          }
+          engine.updateSettings(remoteSettings);
           
           // 2. 记录日志
           StorageService.addLog({ 
@@ -93,19 +102,6 @@ export default function App() {
       }
     };
     pullRemoteSettings();
-  }, []);
-
-  // Initialize Strategy Engine
-  useEffect(() => {
-    const engine = new StrategyEngine(settings, (state) => {
-      setEngineState((prev: any) => ({ ...prev, ...state }));
-      if (state.ip) setIp(state.ip);
-      // Sync logs when they change (StorageService adds them, but we need to update UI)
-      setLogs(StorageService.getLogs());
-    });
-    
-    engineRef.current = engine;
-    engine.start();
 
     // Fetch IPs
     const binance = new BinanceService(settings.binance.apiKey, settings.binance.secretKey, settings.binance.baseUrl);

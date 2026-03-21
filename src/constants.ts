@@ -8,10 +8,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     wsUrl: import.meta.env.VITE_BINANCE_WS_URL || "wss://fstream.binance.com/ws",
   },
   supabase: {
-    projectUrl: "https://lrhuayeivfmrvoiguszs.supabase.co",
-    publishableKey: "sb_publishable_NRT27EsefJyCTaP8x1x1sQ_hVLrlK8f",
-    connectionString: "postgresql://postgres:TwgdhFlzx3qc@db.lrhuayeivfmrvoiguszs.supabase.co:5432/postgres",
-    supaName: "supa01",
+    projectUrl: import.meta.env.VITE_SUPABASE_URL || "https://lrhuayeivfmrvoiguszs.supabase.co",
+    publishableKey: import.meta.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_NRT27EsefJyCTaP8x1x1sQ_hVLrlK8f",
+    connectionString: import.meta.env.VITE_SUPABASE_CONNECTION_STRING || "postgresql://postgres:TwgdhFlzx3qc@db.lrhuayeivfmrvoiguszs.supabase.co:5432/postgres",
+    supaName: import.meta.env.VITE_SUPABASE_TABLE_NAME || "supa01",
   },
   scanner: {
     stage0Period: "1h",

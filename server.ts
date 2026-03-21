@@ -1,7 +1,14 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-
-import axios from 'axios';
+import path from "path";
+import axios from "axios";
+import http from "http";
+import { BackendStorage } from "./server/storage";
+import { UIHub } from "./server/hub";
+import { BackendStrategyEngine } from "./server/strategy";
+import { SupabaseService } from "./src/services/supabase";
+import { DEFAULT_SETTINGS } from "./src/constants";
+import { AppSettings } from "./src/types";
 
 let cachedIP: string | null = null;
 let lastFetchTime = 0;
@@ -37,7 +44,6 @@ async function getPublicIP(): Promise<string> {
   };
 
   try {
-    // 并行请求，取最快返回的一个
     const ip = await Promise.any(services.map(url => fetchIP(url)));
     cachedIP = ip;
     lastFetchTime = now;
@@ -54,26 +60,108 @@ async function startServer() {
 
   app.use(express.json());
 
-  // API routes FIRST
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok" });
-  });
+  // Create HTTP server for WebSocket support
+  const httpServer = http.createServer(app);
 
-  app.get("/api/test", (req, res) => {
-    console.log('Test endpoint hit');
-    res.json({ message: "Backend is reachable", time: new Date().toISOString() });
+  // Initialize UI Hub
+  const uiHub = new UIHub(httpServer);
+
+  // Load initial settings
+  let settings = BackendStorage.getSettings() || DEFAULT_SETTINGS;
+
+  // Initialize Strategy Engine
+  const engine = new BackendStrategyEngine(
+    settings,
+    (state) => uiHub.broadcastState(state),
+    (log) => uiHub.broadcastLog(log)
+  );
+
+  // Automatic Startup Logic
+  const autoStart = async () => {
+    console.log('[Server] Starting automatic initialization...');
+    try {
+      // 1. Try to pull settings from Supabase
+      const remoteSettings = await SupabaseService.pullSettings(settings);
+      if (remoteSettings) {
+        console.log('[Server] Successfully pulled settings from Supabase');
+        settings = remoteSettings;
+        BackendStorage.saveSettings(settings);
+        engine.updateSettings(settings);
+      } else {
+        console.log('[Server] No settings found in Supabase or pull failed, using local settings');
+      }
+
+      // 2. Start the engine
+      await engine.start();
+      
+      // 3. Automatically enable Master Switch
+      console.log('[Server] Automatically enabling Master Switch...');
+      engine.setMasterSwitch(true);
+      
+    } catch (error) {
+      console.error('[Server] Auto-start error:', error);
+      await engine.start();
+    }
+  };
+
+  autoStart();
+
+  // API Routes
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", version: "1.2.0" });
   });
 
   app.get("/api/ip", async (req, res) => {
     const ip = await getPublicIP();
-    console.log('[/api/ip] Server Public IP:', ip);
     res.json({ ip });
+  });
+
+  app.get("/api/state", (req, res) => {
+    res.json(engine.getFullState());
+  });
+
+  app.get("/api/settings", (req, res) => {
+    res.json(BackendStorage.getSettings() || DEFAULT_SETTINGS);
+  });
+
+  app.post("/api/settings", (req, res) => {
+    const newSettings = req.body as AppSettings;
+    BackendStorage.saveSettings(newSettings);
+    engine.updateSettings(newSettings);
+    res.json({ success: true });
+  });
+
+  app.post("/api/master-switch", (req, res) => {
+    const { enabled } = req.body;
+    engine.setMasterSwitch(enabled);
+    res.json({ success: true, enabled });
+  });
+
+  app.post("/api/force-scan", async (req, res) => {
+    const { stage } = req.body;
+    try {
+      if (stage === 0) (engine as any).runStage0();
+      if (stage === '0P') (engine as any).runStage0P();
+      if (stage === 1) (engine as any).runStage1();
+      if (stage === 2) (engine as any).runStage2();
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/logs", (req, res) => {
+    res.json(BackendStorage.getLogs());
+  });
+
+  app.delete("/api/logs", (req, res) => {
+    BackendStorage.clearLogs();
+    res.json({ success: true });
   });
 
   app.post("/api/proxy", async (req, res) => {
     const { url, method, headers, body } = req.body;
     try {
-      // Clean up headers
       const cleanHeaders: Record<string, string> = {};
       if (headers) {
         Object.entries(headers).forEach(([key, val]) => {
@@ -90,41 +178,29 @@ async function startServer() {
         headers: cleanHeaders,
         data: body,
         timeout: 15000,
-        validateStatus: () => true // Allow any status code to be returned to client
+        validateStatus: () => true
       });
       
       res.status(response.status).json(response.data);
     } catch (e: any) {
-      console.error(`[/api/proxy] Proxy error for ${url}:`, e.message);
       res.status(500).json({ error: e.message });
     }
   });
 
   app.post("/api/send-email", async (req, res) => {
     const { from, to, smtp, port, pass, subject, text } = req.body;
-    
     try {
       const nodemailer = await import('nodemailer');
       const transporter = nodemailer.createTransport({
         host: smtp,
         port: port,
-        secure: port === 465, // true for 465, false for other ports
-        auth: {
-          user: from,
-          pass: pass,
-        },
+        secure: port === 465,
+        auth: { user: from, pass: pass },
       });
 
-      const info = await transporter.sendMail({
-        from: from,
-        to: to,
-        subject: subject,
-        text: text,
-      });
-
-      res.json({ success: true, messageId: info.messageId });
+      await transporter.sendMail({ from, to, subject, text });
+      res.json({ success: true });
     } catch (e: any) {
-      console.error('Email Error:', e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -137,19 +213,15 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
-    app.get("*", (req, res) => {
-      res.sendFile("dist/index.html", { root: "." });
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", async () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server is listening on 0.0.0.0:${PORT}`);
-    console.log(`External access is available via the provided App URL.`);
-    
-    // 获取并打印公网 IP
-    const ip = await getPublicIP();
-    console.log('服务器公网 IP:', ip);
   });
 }
 

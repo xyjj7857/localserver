@@ -15,11 +15,14 @@ import { AppSettings, LogEntry } from './types';
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => {
     const s = StorageService.getSettings();
-    // 启动时先关闭，同步后再开启
-    return { ...s, masterSwitch: false };
+    // 启动时不再强制关闭，而是根据保存的状态或同步结果决定
+    return s;
   });
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [isLocked, setIsLocked] = useState(false);
+  const [isLocked, setIsLocked] = useState(() => {
+    const s = StorageService.getSettings();
+    return !!s.lockPassword; // 如果设置了密码，启动时默认锁定
+  });
   const [logs, setLogs] = useState<LogEntry[]>(StorageService.getLogs());
   const [ip, setIp] = useState('加载中...');
   const [localIp, setLocalIp] = useState('加载中...');
@@ -71,6 +74,12 @@ export default function App() {
     
     engineRef.current = engine;
     engine.start();
+    
+    StorageService.addLog({ 
+      module: 'System', 
+      type: 'system', 
+      message: '系统核心程序已启动' 
+    });
 
     // Pull from Supabase and auto-start
     const pullRemoteSettings = async () => {

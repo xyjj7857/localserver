@@ -1,3 +1,5 @@
+import WebSocket from 'ws';
+
 export class BinanceWS {
   private ws: WebSocket | null = null;
   private url: string;
@@ -8,7 +10,7 @@ export class BinanceWS {
   private onError?: (err: any) => void;
   private reconnectTimer: any = null;
   private reconnectAttempts: number = 0;
-  private maxReconnectDelay: number = 10000; // 最大重连延迟 10s (reduced from 30s)
+  private maxReconnectDelay: number = 30000;
   private subscriptions: Set<string> = new Set();
 
   private pingTimer: any = null;
@@ -24,7 +26,7 @@ export class BinanceWS {
     if (this.url !== url) {
       this.url = url;
       if (this.ws) {
-        this.isManualClose = false; // 允许自动重连到新 URL
+        this.isManualClose = false;
         this.ws.close();
       }
     }
@@ -34,7 +36,7 @@ export class BinanceWS {
     if (this.listenKey !== key) {
       this.listenKey = key;
       if (this.ws) {
-        this.isManualClose = false; // 允许自动重连到新 ListenKey
+        this.isManualClose = false;
         this.ws.close();
       }
     }
@@ -47,14 +49,10 @@ export class BinanceWS {
     this.isManualClose = false;
 
     if (this.ws) {
-      this.ws.onopen = null;
-      this.ws.onmessage = null;
-      this.ws.onclose = null;
-      this.ws.onerror = null;
+      this.ws.removeAllListeners();
       this.ws.close();
     }
 
-    // Ensure URL doesn't end with a slash before appending listenKey
     let baseUrl = this.url.endsWith('/') ? this.url.slice(0, -1) : this.url;
     let fullUrl = baseUrl;
     
@@ -62,79 +60,66 @@ export class BinanceWS {
       fullUrl = `${baseUrl}/${this.listenKey}`;
     }
 
-    console.log('Connecting to WebSocket:', fullUrl);
+    console.log('[Backend WS] Connecting to WebSocket:', fullUrl);
     try {
       this.ws = new WebSocket(fullUrl);
     } catch (e) {
-      console.error('WebSocket Creation Failed:', e);
+      console.error('[Backend WS] WebSocket Creation Failed:', e);
       if (this.onError) this.onError(e);
       this.scheduleReconnect();
       return;
     }
 
-    this.ws.onopen = () => {
-      console.log('WebSocket Connected');
+    this.ws.on('open', () => {
+      console.log('[Backend WS] WebSocket Connected');
       this.reconnectAttempts = 0;
       this.lastPong = Date.now();
       this.startHeartbeat();
       if (this.onOpen) this.onOpen();
       this.resubscribe();
-    };
+    });
 
-    this.ws.onmessage = (event) => {
+    this.ws.on('message', (data) => {
       this.lastPong = Date.now();
-      
       try {
-        const data = JSON.parse(event.data);
-        // Binance specific: handle ping from server if any (though usually it's frames)
-        if (data.e === 'ping') {
+        const message = JSON.parse(data.toString());
+        if (message.e === 'ping') {
           this.ws?.send(JSON.stringify({ method: 'pong' }));
           return;
         }
-        this.onMessage(data);
-      } catch (e) {
-        // Handle non-JSON messages if any
-      }
-    };
+        this.onMessage(message);
+      } catch (e) {}
+    });
 
-    this.ws.onclose = (event) => {
-      console.log(`WebSocket Closed. Code: ${event.code}, Reason: ${event.reason}`);
+    this.ws.on('close', (code, reason) => {
+      console.log(`[Backend WS] WebSocket Closed. Code: ${code}, Reason: ${reason}`);
       this.stopHeartbeat();
       if (this.onClose) this.onClose();
       if (!this.isManualClose) {
         this.scheduleReconnect();
       }
-    };
+    });
 
-    this.ws.onerror = (err) => {
-      console.error('WebSocket Error:', err);
+    this.ws.on('error', (err) => {
+      console.error('[Backend WS] WebSocket Error:', err);
       if (this.onError) this.onError(err);
-      // On error, the onclose will be called, which triggers reconnect
-    };
+    });
   }
 
   private startHeartbeat() {
     this.stopHeartbeat();
     this.pingTimer = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        // 检查是否长时间未收到消息
         const idleTime = Date.now() - this.lastPong;
-        if (idleTime > 30000) { // Reduced from 60s to 30s for faster detection
-          console.warn(`WebSocket Idle Timeout (${Math.floor(idleTime/1000)}s), reconnecting...`);
+        if (idleTime > 60000) {
+          console.warn(`[Backend WS] WebSocket Idle Timeout (${Math.floor(idleTime/1000)}s), reconnecting...`);
           this.ws.close();
           return;
         }
-
-        // 定期发送应用层 ping 以维持连接 (Binance API 推荐)
-        try {
-          this.ws.send(JSON.stringify({ method: 'LIST_SUBSCRIPTIONS', id: Date.now() }));
-        } catch (e) {}
-      } else if (!this.isManualClose && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
-        // 如果连接已关闭且不是手动关闭，尝试立即重连
-        console.warn('WebSocket found CLOSED in heartbeat, reconnecting...');
-        this.scheduleReconnect();
+        // Node.js ws library handles pings/pongs automatically, but we can send a custom ping if needed
+        this.ws.ping();
       }
-    }, 10000); // Check every 10s instead of 15s
+    }, 15000);
   }
 
   private stopHeartbeat() {
@@ -146,11 +131,8 @@ export class BinanceWS {
 
   private scheduleReconnect() {
     if (this.reconnectTimer || this.isManualClose) return;
-    
-    // 指数退避算法: 1s, 2s, 4s, 8s, max 10s (More aggressive)
-    const delay = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, this.maxReconnectDelay);
-    console.log(`Scheduling WebSocket reconnect in ${delay}ms (Attempt ${this.reconnectAttempts + 1})`);
-    
+    const delay = Math.min(Math.pow(2, this.reconnectAttempts) * 2000, this.maxReconnectDelay);
+    console.log(`[Backend WS] Scheduling WebSocket reconnect in ${delay}ms (Attempt ${this.reconnectAttempts + 1})`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.reconnectAttempts++;
@@ -163,12 +145,7 @@ export class BinanceWS {
       streams.forEach(s => this.subscriptions.add(s));
       return;
     }
-
-    const payload = {
-      method: 'SUBSCRIBE',
-      params: streams,
-      id: Date.now(),
-    };
+    const payload = { method: 'SUBSCRIBE', params: streams, id: Date.now() };
     this.ws.send(JSON.stringify(payload));
     streams.forEach(s => this.subscriptions.add(s));
   }
@@ -178,12 +155,7 @@ export class BinanceWS {
       streams.forEach(s => this.subscriptions.delete(s));
       return;
     }
-
-    const payload = {
-      method: 'UNSUBSCRIBE',
-      params: streams,
-      id: Date.now(),
-    };
+    const payload = { method: 'UNSUBSCRIBE', params: streams, id: Date.now() };
     this.ws.send(JSON.stringify(payload));
     streams.forEach(s => this.subscriptions.delete(s));
   }
@@ -195,12 +167,9 @@ export class BinanceWS {
   }
 
   close() {
-    if (this.ws) {
-      this.ws.close();
-    }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-    }
+    this.isManualClose = true;
+    if (this.ws) this.ws.close();
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
   }
 
   get status() {

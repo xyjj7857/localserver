@@ -110,6 +110,8 @@ export class StrategyEngine {
   async start() {
     if (this.mainLoopInterval || this.isStopped) return; // Already started or stopped
     
+    StorageService.addLog({ module: 'System', type: 'system', message: '策略引擎正在启动...' });
+    
     // Fetch initial IP
     console.log('[StrategyEngine] Fetching initial IP...');
     this.binance.getIp().then(ip => {
@@ -121,6 +123,7 @@ export class StrategyEngine {
     this.startTimers();
 
     if (this.masterSwitch) {
+      StorageService.addLog({ module: 'System', type: 'system', message: '总开关已开启，正在初始化连接...' });
       // 1. Sync Time
       await this.binance.syncTime();
       if (this.isStopped) return;

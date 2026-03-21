@@ -3,13 +3,48 @@ import { createServer as createViteServer } from "vite";
 
 import axios from 'axios';
 
+let cachedIP: string | null = null;
+let lastFetchTime = 0;
+const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
+
 async function getPublicIP(): Promise<string> {
+  const now = Date.now();
+  if (cachedIP && (now - lastFetchTime < CACHE_DURATION)) {
+    return cachedIP;
+  }
+
+  const services = [
+    'https://api.ipify.org?format=json',
+    'https://api64.ipify.org?format=json',
+    'https://icanhazip.com/',
+    'https://ident.me/',
+    'https://checkip.amazonaws.com/'
+  ];
+
+  const fetchIP = async (url: string): Promise<string> => {
+    const response = await axios.get(url, { timeout: 5000 });
+    let ip = '';
+    if (typeof response.data === 'string') {
+      ip = response.data.trim();
+    } else if (response.data && response.data.ip) {
+      ip = response.data.ip;
+    }
+    
+    if (ip && /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip)) {
+      return ip;
+    }
+    throw new Error('Invalid IP format');
+  };
+
   try {
-    const res = await axios.get('https://api.ipify.org?format=json');
-    return res.data.ip;
+    // 并行请求，取最快返回的一个
+    const ip = await Promise.any(services.map(url => fetchIP(url)));
+    cachedIP = ip;
+    lastFetchTime = now;
+    return ip;
   } catch (err) {
-    console.error('获取公网IP失败', err);
-    return 'unknown';
+    console.error('所有公网IP获取服务均失败', err);
+    return cachedIP || 'unknown';
   }
 }
 

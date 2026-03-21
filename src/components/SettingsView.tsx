@@ -9,9 +9,10 @@ interface SettingsViewProps {
   settings: AppSettings;
   onSave: (settings: AppSettings) => void;
   ip: string;
+  onRefreshIp: () => void;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, ip }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, ip, onRefreshIp }) => {
   const [localSettings, setLocalSettings] = useState(settings);
   const [showSecrets, setShowSecrets] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -254,7 +255,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, ip
                 <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></span>
                 服务器 IP (用于币安 API 白名单)
               </p>
-              <p className="text-xl font-mono font-bold text-amber-800 mt-1">{ip}</p>
+              <p className="text-xl font-mono font-bold text-amber-800 mt-1 flex items-center gap-2">
+                {ip}
+                <button 
+                  onClick={onRefreshIp}
+                  className="p-1 hover:bg-amber-200 rounded-full transition-colors text-amber-600"
+                  title="刷新 IP"
+                >
+                  <RotateCcw size={16} />
+                </button>
+              </p>
               <div className="mt-3 space-y-2">
                 <p className="text-xs text-amber-700 leading-relaxed">
                   如果您选择了 <span className="font-bold">“代理 IP (服务器)”</span>，您 <span className="font-bold underline">必须</span> 在币安 API 设置中：

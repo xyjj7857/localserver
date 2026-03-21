@@ -198,6 +198,18 @@ export default function App() {
     setLogs([]);
   };
 
+  const refreshIp = async () => {
+    setIp('正在刷新...');
+    try {
+      const binance = new BinanceService(settings.binance.apiKey, settings.binance.secretKey, settings.binance.baseUrl);
+      const newIp = await binance.getIp();
+      setIp(newIp);
+    } catch (err) {
+      console.error('Refresh IP failed:', err);
+      setIp('获取失败');
+    }
+  };
+
   if (isLocked) {
     return <LockScreen correctPassword={settings.lockPassword} onUnlock={() => setIsLocked(false)} />;
   }
@@ -222,7 +234,7 @@ export default function App() {
         />
       )}
       {activeTab === 'logs' && <LogView logs={logs} onClear={handleClearLogs} />}
-      {activeTab === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} ip={ip} />}
+      {activeTab === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} ip={ip} onRefreshIp={refreshIp} />}
     </Layout>
   );
 }

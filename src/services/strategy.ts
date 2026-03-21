@@ -93,6 +93,8 @@ export class StrategyEngine {
     this.ws = new BinanceWS(settings.binance.wsUrl, this.handleWSMessage.bind(this));
     this.masterSwitch = settings.masterSwitch;
 
+    StorageService.addLog({ module: 'System', type: 'system', message: '策略引擎已初始化，准备在后台运行...' });
+
     // Restore state if available
     const savedState = StorageService.getState();
     if (savedState) {
@@ -110,6 +112,8 @@ export class StrategyEngine {
   async start() {
     if (this.mainLoopInterval || this.isStopped) return; // Already started or stopped
     
+    StorageService.addLog({ module: 'System', type: 'system', message: '策略引擎正在启动...' });
+
     // Fetch initial IP
     console.log('[StrategyEngine] Fetching initial IP...');
     this.binance.getIp().then(ip => {
@@ -275,9 +279,30 @@ export class StrategyEngine {
     if (this.refreshInterval) clearInterval(this.refreshInterval);
     this.refreshInterval = setInterval(() => this.refreshAccountInfo(), 5000);
 
-    // Sync time every 30 minutes to prevent drift (Removed: will sync after Stage 1)
-    if (this.syncInterval) clearInterval(this.syncInterval);
-    // this.syncInterval = setInterval(() => this.binance.syncTime(), 30 * 60 * 1000);
+    // WebSocket Watchdog every 30s
+    if (this.watchdogInterval) clearInterval(this.watchdogInterval);
+    this.watchdogInterval = setInterval(() => this.watchdog(), 30000);
+  }
+
+  private watchdogInterval: any = null;
+
+  private watchdog() {
+    if (!this.masterSwitch || this.isStopped) return;
+
+    const now = Date.now();
+    const idleTime = now - this.lastWSMessageTime;
+
+    // If WebSocket is not OPEN and not CONNECTING, force reconnect
+    if (this.ws.status !== 'OPEN' && this.ws.status !== 'CONNECTING') {
+      console.warn('[StrategyEngine] Watchdog: WebSocket is down, forcing reconnect...');
+      StorageService.addLog({ module: 'System', type: 'warning', message: '看门狗检测到 WebSocket 连接中断，正在强制重连...' });
+      this.ws.connect();
+    } else if (this.ws.status === 'OPEN' && idleTime > 90000) {
+      // If OPEN but no message for 90s, force reconnect
+      console.warn(`[StrategyEngine] Watchdog: WebSocket is idle for ${Math.floor(idleTime/1000)}s, forcing reconnect...`);
+      StorageService.addLog({ module: 'System', type: 'warning', message: '看门狗检测到 WebSocket 空闲超时，正在强制重连...' });
+      this.ws.connect();
+    }
   }
 
   private lastRunBlock = {

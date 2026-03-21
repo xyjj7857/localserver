@@ -211,31 +211,38 @@ export default function App() {
     }
   };
 
-  if (isLocked) {
-    return <LockScreen correctPassword={settings.lockPassword} onUnlock={() => setIsLocked(false)} />;
-  }
-
   return (
-    <Layout 
-      activeTab={activeTab} 
-      setActiveTab={setActiveTab}
-      masterSwitch={engineState.masterSwitch}
-      onToggleMaster={handleToggleMaster}
-      onLock={() => setIsLocked(true)}
-      serverIp={ip}
-    >
-      {activeTab === 'dashboard' && <Dashboard state={engineState} ip={ip} localIp={localIp} />}
-      {activeTab === 'scanner' && (
-        <ScannerView 
-          state={engineState} 
-          onForceStage0={() => engineRef.current?.forceRunStage0()}
-          onForceStage0P={() => engineRef.current?.forceRunStage0P()}
-          onForceStage1={() => engineRef.current?.forceRunStage1()}
-          onForceStage2={() => engineRef.current?.forceRunStage2()}
+    <div className="relative min-h-screen bg-gray-50">
+      {/* 策略引擎在后台始终渲染，即使锁屏 */}
+      <Layout 
+        activeTab={activeTab} 
+        setActiveTab={setActiveTab}
+        masterSwitch={engineState.masterSwitch}
+        onToggleMaster={handleToggleMaster}
+        onLock={() => setIsLocked(true)}
+        serverIp={ip}
+      >
+        {activeTab === 'dashboard' && <Dashboard state={engineState} ip={ip} localIp={localIp} />}
+        {activeTab === 'scanner' && (
+          <ScannerView 
+            state={engineState} 
+            onForceStage0={() => engineRef.current?.forceRunStage0()}
+            onForceStage0P={() => engineRef.current?.forceRunStage0P()}
+            onForceStage1={() => engineRef.current?.forceRunStage1()}
+            onForceStage2={() => engineRef.current?.forceRunStage2()}
+          />
+        )}
+        {activeTab === 'logs' && <LogView logs={logs} onClear={handleClearLogs} />}
+        {activeTab === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} ip={ip} onRefreshIp={refreshIp} />}
+      </Layout>
+
+      {/* 锁屏层：全屏覆盖 */}
+      {isLocked && (
+        <LockScreen 
+          correctPassword={settings.lockPassword} 
+          onUnlock={() => setIsLocked(false)} 
         />
       )}
-      {activeTab === 'logs' && <LogView logs={logs} onClear={handleClearLogs} />}
-      {activeTab === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} ip={ip} onRefreshIp={refreshIp} />}
-    </Layout>
+    </div>
   );
 }

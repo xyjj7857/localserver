@@ -131,19 +131,13 @@ export class BinanceWS {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         // 检查是否长时间未收到消息
         const idleTime = Date.now() - this.lastPong;
-        if (idleTime > 60000) {
+        if (idleTime > 30000) { // 缩短到 30s，更激进地重连
           console.warn(`WebSocket Idle Timeout (${Math.floor(idleTime/1000)}s), reconnecting...`);
           this.ws.close();
           return;
         }
-
-        // 发送应用层 ping (部分环境可能需要)
-        try {
-          // 币安通常不需要主动发送 ping 字符串，但发送一个空消息或特定格式可以维持连接
-          // 这里我们主要依赖 lastPong 检查
-        } catch (e) {}
       }
-    }, 15000);
+    }, 10000);
   }
 
   private stopHeartbeat() {

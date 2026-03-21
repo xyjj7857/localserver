@@ -119,7 +119,7 @@ export interface AppSettings {
 export interface LogEntry {
   id: string;
   timestamp: number;
-  type: 'scanner' | 'order' | 'system' | 'error';
+  type: 'scanner' | 'order' | 'system' | 'error' | 'warning';
   module: string;
   message: string;
   details?: any;

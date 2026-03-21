@@ -8,8 +8,6 @@ export class BinanceService {
   private timeOffset: number = 0;
   private ipSelection: 'local' | 'proxy' = 'proxy';
 
-  private isNode = typeof window === 'undefined';
-
   constructor(apiKey: string, secretKey: string, baseUrl: string) {
     this.apiKey = apiKey.trim();
     this.secretKey = secretKey.trim();
@@ -27,7 +25,7 @@ export class BinanceService {
       const url = `${this.baseUrl}/fapi/v1/time`;
       let data;
 
-      if (this.ipSelection === 'proxy' && !this.isNode) {
+      if (this.ipSelection === 'proxy') {
         const response = await axios.post('/api/proxy', { url, method: 'GET' });
         data = response.data;
       } else {
@@ -75,7 +73,7 @@ export class BinanceService {
     try {
       let data;
 
-      if (this.ipSelection === 'proxy' && !this.isNode) {
+      if (this.ipSelection === 'proxy') {
         const response = await axios.post('/api/proxy', { url, method, headers });
         data = response.data;
       } else {
@@ -207,11 +205,6 @@ export class BinanceService {
   async getIp() {
     // Fetch from our own backend to get server IP (always useful for whitelisting)
     try {
-      if (this.isNode) {
-        // In Node, we can't call our own API via relative path, but we can call it via localhost
-        const res = await axios.get('http://localhost:3000/api/ip');
-        return res.data.ip || 'Unknown';
-      }
       console.log('Fetching server IP from /api/ip...');
       const res = await axios.get('/api/ip');
       return res.data.ip || 'Unknown';

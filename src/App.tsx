@@ -15,14 +15,11 @@ import { AppSettings, LogEntry } from './types';
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(() => {
     const s = StorageService.getSettings();
-    // 启动时不再强制关闭，而是根据保存的状态或同步结果决定
+    s.masterSwitch = true; // 默认开启策略
     return s;
   });
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [isLocked, setIsLocked] = useState(() => {
-    const s = StorageService.getSettings();
-    return !!s.lockPassword; // 如果设置了密码，启动时默认锁定
-  });
+  const [isLocked, setIsLocked] = useState(true);
   const [logs, setLogs] = useState<LogEntry[]>(StorageService.getLogs());
   const [ip, setIp] = useState('加载中...');
   const [localIp, setLocalIp] = useState('加载中...');
@@ -63,7 +60,43 @@ export default function App() {
   const engineRef = useRef<StrategyEngine | null>(null);
   const lockTimerRef = useRef<any>(null);
 
-  // Initialize Strategy Engine and Auto-pull from Supabase
+  // Auto-pull from Supabase on mount
+  useEffect(() => {
+    const pullRemoteSettings = async () => {
+      try {
+        const remoteSettings = await SupabaseService.pullSettings(settings);
+        if (remoteSettings) {
+          // 1. 同步配置
+          remoteSettings.masterSwitch = true; // 强制开启
+          setSettings(remoteSettings);
+          StorageService.saveSettings(remoteSettings);
+          if (engineRef.current) {
+            engineRef.current.updateSettings(remoteSettings);
+          }
+          
+          // 2. 记录日志
+          StorageService.addLog({ 
+            module: 'System', 
+            type: 'system', 
+            message: '已从 Supabase 同步配置并自动开启策略' 
+          });
+          setLogs(StorageService.getLogs());
+
+          // 3. 确保开启状态
+          handleToggleMaster(true);
+        } else {
+          // 如果拉取失败，仍然开启本地开关
+          handleToggleMaster(true);
+        }
+      } catch (e) {
+        console.error('Failed to auto-pull settings from Supabase:', e);
+        handleToggleMaster(true);
+      }
+    };
+    pullRemoteSettings();
+  }, []);
+
+  // Initialize Strategy Engine
   useEffect(() => {
     const engine = new StrategyEngine(settings, (state) => {
       setEngineState((prev: any) => ({ ...prev, ...state }));
@@ -74,43 +107,6 @@ export default function App() {
     
     engineRef.current = engine;
     engine.start();
-    
-    StorageService.addLog({ 
-      module: 'System', 
-      type: 'system', 
-      message: '系统核心程序已启动' 
-    });
-
-    // Pull from Supabase and auto-start
-    const pullRemoteSettings = async () => {
-      try {
-        const remoteSettings = await SupabaseService.pullSettings(settings);
-        if (remoteSettings) {
-          // 1. 同步配置
-          setSettings(remoteSettings);
-          StorageService.saveSettings(remoteSettings);
-          engine.updateSettings(remoteSettings);
-          
-          // 2. 记录日志
-          StorageService.addLog({ 
-            module: 'System', 
-            type: 'system', 
-            message: '已从sup同步回' 
-          });
-          setLogs(StorageService.getLogs());
-
-          // 3. 开启启动开关
-          handleToggleMaster(true);
-        } else {
-          // 如果拉取失败，仍然开启本地开关（保持原有逻辑兜底）
-          handleToggleMaster(true);
-        }
-      } catch (e) {
-        console.error('Failed to auto-pull settings from Supabase:', e);
-        handleToggleMaster(true);
-      }
-    };
-    pullRemoteSettings();
 
     // Fetch IPs
     const binance = new BinanceService(settings.binance.apiKey, settings.binance.secretKey, settings.binance.baseUrl);

@@ -110,8 +110,6 @@ export class StrategyEngine {
   async start() {
     if (this.mainLoopInterval || this.isStopped) return; // Already started or stopped
     
-    StorageService.addLog({ module: 'System', type: 'system', message: '策略引擎正在启动...' });
-    
     // Fetch initial IP
     console.log('[StrategyEngine] Fetching initial IP...');
     this.binance.getIp().then(ip => {
@@ -123,7 +121,16 @@ export class StrategyEngine {
     this.startTimers();
 
     if (this.masterSwitch) {
-      StorageService.addLog({ module: 'System', type: 'system', message: '总开关已开启，正在初始化连接...' });
+      this.initializeStrategy();
+    }
+  }
+
+  private async initializeStrategy(retryCount = 0) {
+    if (!this.masterSwitch || this.isStopped) return;
+    
+    try {
+      console.log(`[StrategyEngine] Initializing strategy (Attempt ${retryCount + 1})...`);
+      
       // 1. Sync Time
       await this.binance.syncTime();
       if (this.isStopped) return;
@@ -156,6 +163,16 @@ export class StrategyEngine {
       
       // Run first Stage 0 scan on startup
       this.runStage0();
+      
+    } catch (e: any) {
+      console.error(`[StrategyEngine] Initialization failed (Attempt ${retryCount + 1}):`, e);
+      if (retryCount < 5 && !this.isStopped) {
+        const delay = Math.min(Math.pow(2, retryCount) * 2000, 30000);
+        console.log(`[StrategyEngine] Retrying initialization in ${delay}ms...`);
+        setTimeout(() => this.initializeStrategy(retryCount + 1), delay);
+      } else {
+        StorageService.addLog({ module: 'System', type: 'error', message: `策略初始化多次失败: ${e.message}` });
+      }
     }
   }
 
@@ -1432,31 +1449,14 @@ export class StrategyEngine {
   }
 
   setMasterSwitch(val: boolean) {
+    const prev = this.masterSwitch;
     this.masterSwitch = val;
     this.settings.masterSwitch = val;
     StorageService.saveSettings(this.settings);
     
-    if (val) {
-      // ON: Re-initialize everything
-      this.binance.syncTime();
-      this.refreshExchangeInfo();
-      this.setupUserDataStream();
-      this.ws.connect(
-        () => {
-          this.wsError = null;
-          this.notifyUI();
-          this.updateSubscriptions();
-        },
-        () => this.notifyUI(),
-        (err) => {
-          this.wsError = 'WebSocket 连接失败，请检查地址或网络';
-          this.notifyUI();
-        }
-      );
-      this.refreshAccountInfo();
-      // 立即执行第一次全市场扫描
-      this.runStage0();
-    } else {
+    if (val && !prev) {
+      this.initializeStrategy();
+    } else if (!val && prev) {
       // OFF: Cleanup and stop all requests
       this.updateSubscriptions(); // Will clear all market data subscriptions
       this.ws.close();

@@ -8,7 +8,9 @@ export class BinanceWS {
   private onError?: (err: any) => void;
   private reconnectTimer: any = null;
   private reconnectAttempts: number = 0;
-  private maxReconnectDelay: number = 10000; // 最大重连延迟 10s (reduced from 30s)
+  private maxReconnectAttempts: number = 50; // 增加最大尝试次数
+  private initialReconnectDelay: number = 1000; // 初始重连延迟 1s
+  private maxReconnectDelay: number = 30000; // 最大重连延迟 30s
   private subscriptions: Set<string> = new Set();
 
   private pingTimer: any = null;
@@ -62,7 +64,7 @@ export class BinanceWS {
       fullUrl = `${baseUrl}/${this.listenKey}`;
     }
 
-    console.log('Connecting to WebSocket:', fullUrl);
+    console.log(`Connecting to WebSocket (Attempt ${this.reconnectAttempts + 1}):`, fullUrl);
     try {
       this.ws = new WebSocket(fullUrl);
     } catch (e) {
@@ -72,7 +74,16 @@ export class BinanceWS {
       return;
     }
 
+    // 设置连接超时
+    const connectionTimeout = setTimeout(() => {
+      if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+        console.warn('WebSocket connection timeout, retrying...');
+        this.ws.close();
+      }
+    }, 10000);
+
     this.ws.onopen = () => {
+      clearTimeout(connectionTimeout);
       console.log('WebSocket Connected');
       this.reconnectAttempts = 0;
       this.lastPong = Date.now();
@@ -98,6 +109,7 @@ export class BinanceWS {
     };
 
     this.ws.onclose = (event) => {
+      clearTimeout(connectionTimeout);
       console.log(`WebSocket Closed. Code: ${event.code}, Reason: ${event.reason}`);
       this.stopHeartbeat();
       if (this.onClose) this.onClose();
@@ -119,22 +131,19 @@ export class BinanceWS {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         // 检查是否长时间未收到消息
         const idleTime = Date.now() - this.lastPong;
-        if (idleTime > 30000) { // Reduced from 60s to 30s for faster detection
+        if (idleTime > 60000) {
           console.warn(`WebSocket Idle Timeout (${Math.floor(idleTime/1000)}s), reconnecting...`);
           this.ws.close();
           return;
         }
 
-        // 定期发送应用层 ping 以维持连接 (Binance API 推荐)
+        // 发送应用层 ping (部分环境可能需要)
         try {
-          this.ws.send(JSON.stringify({ method: 'LIST_SUBSCRIPTIONS', id: Date.now() }));
+          // 币安通常不需要主动发送 ping 字符串，但发送一个空消息或特定格式可以维持连接
+          // 这里我们主要依赖 lastPong 检查
         } catch (e) {}
-      } else if (!this.isManualClose && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
-        // 如果连接已关闭且不是手动关闭，尝试立即重连
-        console.warn('WebSocket found CLOSED in heartbeat, reconnecting...');
-        this.scheduleReconnect();
       }
-    }, 10000); // Check every 10s instead of 15s
+    }, 15000);
   }
 
   private stopHeartbeat() {
@@ -147,8 +156,14 @@ export class BinanceWS {
   private scheduleReconnect() {
     if (this.reconnectTimer || this.isManualClose) return;
     
-    // 指数退避算法: 1s, 2s, 4s, 8s, max 10s (More aggressive)
-    const delay = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, this.maxReconnectDelay);
+    // 初始几次重连使用固定短延迟，之后使用指数退避
+    let delay;
+    if (this.reconnectAttempts < 5) {
+      delay = this.initialReconnectDelay; // 前 5 次每秒重连一次
+    } else {
+      delay = Math.min(Math.pow(2, this.reconnectAttempts - 5) * 2000, this.maxReconnectDelay);
+    }
+    
     console.log(`Scheduling WebSocket reconnect in ${delay}ms (Attempt ${this.reconnectAttempts + 1})`);
     
     this.reconnectTimer = setTimeout(() => {

@@ -1,7 +1,12 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-
+import { WebSocketServer, WebSocket } from 'ws';
+import http from 'http';
+import path from 'path';
 import axios from 'axios';
+import { StrategyEngine } from "./server/services/strategy";
+import { StorageService } from "./server/services/storage";
+import { AppSettings } from "./server/types";
 
 let cachedIP: string | null = null;
 let lastFetchTime = 0;
@@ -37,7 +42,6 @@ async function getPublicIP(): Promise<string> {
   };
 
   try {
-    // 并行请求，取最快返回的一个
     const ip = await Promise.any(services.map(url => fetchIP(url)));
     cachedIP = ip;
     lastFetchTime = now;
@@ -50,30 +54,112 @@ async function getPublicIP(): Promise<string> {
 
 async function startServer() {
   const app = express();
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server });
   const PORT = 3000;
 
   app.use(express.json());
 
-  // API routes FIRST
+  // Strategy Engine Initialization
+  let strategyEngine: StrategyEngine | null = null;
+  let lastState: any = null;
+
+  const broadcast = (data: any) => {
+    const message = JSON.stringify(data);
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  };
+
+  const initStrategy = () => {
+    const settings = StorageService.getSettings();
+    if (settings) {
+      strategyEngine = new StrategyEngine(settings, (state) => {
+        lastState = state;
+        broadcast({ type: 'UPDATE', state });
+      });
+      strategyEngine.start();
+    }
+  };
+
+  initStrategy();
+
+  // WebSocket Connection Handling
+  wss.on('connection', (ws) => {
+    console.log('[Server] Client connected to WebSocket');
+    if (lastState) {
+      ws.send(JSON.stringify({ type: 'UPDATE', state: lastState }));
+    }
+
+    ws.on('message', (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        if (data.type === 'PING') {
+          ws.send(JSON.stringify({ type: 'PONG' }));
+        }
+      } catch (e) {}
+    });
+  });
+
+  // API routes
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
   });
 
-  app.get("/api/test", (req, res) => {
-    console.log('Test endpoint hit');
-    res.json({ message: "Backend is reachable", time: new Date().toISOString() });
-  });
-
   app.get("/api/ip", async (req, res) => {
     const ip = await getPublicIP();
-    console.log('[/api/ip] Server Public IP:', ip);
     res.json({ ip });
+  });
+
+  app.get("/api/settings", (req, res) => {
+    const settings = StorageService.getSettings();
+    res.json(settings);
+  });
+
+  app.post("/api/settings", async (req, res) => {
+    const settings = req.body as AppSettings;
+    StorageService.saveSettings(settings);
+    if (strategyEngine) {
+      await strategyEngine.updateSettings(settings);
+    } else {
+      initStrategy();
+    }
+    res.json({ success: true });
+  });
+
+  app.get("/api/logs", (req, res) => {
+    const logs = StorageService.getLogs();
+    res.json(logs);
+  });
+
+  app.post("/api/master-switch", (req, res) => {
+    const { value } = req.body;
+    if (strategyEngine) {
+      strategyEngine.setMasterSwitch(value);
+      res.json({ success: true });
+    } else {
+      res.status(400).json({ error: 'Strategy engine not initialized' });
+    }
+  });
+
+  app.post("/api/force-scan", (req, res) => {
+    const { stage } = req.body;
+    if (strategyEngine) {
+      if (stage === 0) strategyEngine.forceRunStage0();
+      else if (stage === '0P') strategyEngine.forceRunStage0P();
+      else if (stage === 1) strategyEngine.forceRunStage1();
+      else if (stage === 2) strategyEngine.forceRunStage2();
+      res.json({ success: true });
+    } else {
+      res.status(400).json({ error: 'Strategy engine not initialized' });
+    }
   });
 
   app.post("/api/proxy", async (req, res) => {
     const { url, method, headers, body } = req.body;
     try {
-      // Clean up headers
       const cleanHeaders: Record<string, string> = {};
       if (headers) {
         Object.entries(headers).forEach(([key, val]) => {
@@ -83,48 +169,16 @@ async function startServer() {
           }
         });
       }
-
       const response = await axios({
         url,
         method,
         headers: cleanHeaders,
         data: body,
         timeout: 15000,
-        validateStatus: () => true // Allow any status code to be returned to client
+        validateStatus: () => true
       });
-      
       res.status(response.status).json(response.data);
     } catch (e: any) {
-      console.error(`[/api/proxy] Proxy error for ${url}:`, e.message);
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post("/api/send-email", async (req, res) => {
-    const { from, to, smtp, port, pass, subject, text } = req.body;
-    
-    try {
-      const nodemailer = await import('nodemailer');
-      const transporter = nodemailer.createTransport({
-        host: smtp,
-        port: port,
-        secure: port === 465, // true for 465, false for other ports
-        auth: {
-          user: from,
-          pass: pass,
-        },
-      });
-
-      const info = await transporter.sendMail({
-        from: from,
-        to: to,
-        subject: subject,
-        text: text,
-      });
-
-      res.json({ success: true, messageId: info.messageId });
-    } catch (e: any) {
-      console.error('Email Error:', e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -137,17 +191,15 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
-    app.get("*", (req, res) => {
-      res.sendFile("dist/index.html", { root: "." });
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", async () => {
+  server.listen(PORT, "0.0.0.0", async () => {
     console.log(`Server is listening on 0.0.0.0:${PORT}`);
-    console.log(`External access is available via the provided App URL.`);
-    
-    // 获取并打印公网 IP
     const ip = await getPublicIP();
     console.log('服务器公网 IP:', ip);
   });

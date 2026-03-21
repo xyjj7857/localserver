@@ -117,7 +117,7 @@ export interface AppSettings {
 export interface LogEntry {
   id: string;
   timestamp: number;
-  type: 'scanner' | 'order' | 'system' | 'error' | 'trade';
+  type: 'scanner' | 'order' | 'system' | 'error';
   module: string;
   message: string;
   details?: any;
@@ -131,8 +131,6 @@ export interface MarketData {
   low: number;
   open: number;
   close: number;
-  change?: number;
-  timestamp?: number;
   kLineCount?: number;
 }
 

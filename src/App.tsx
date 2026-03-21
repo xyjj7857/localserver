@@ -5,20 +5,14 @@ import { Dashboard } from './components/Dashboard';
 import { ScannerView } from './components/ScannerView';
 import { LogView } from './components/LogView';
 import { SettingsView } from './components/SettingsView';
-import { StorageService } from './services/storage';
-import { StrategyEngine } from './services/strategy';
-import { BinanceService } from './services/binance';
+import { StrategyClient } from './services/strategyClient';
 import { SupabaseService } from './services/supabase';
 import { AppSettings, LogEntry } from './types';
 
 export default function App() {
-  const [settings, setSettings] = useState<AppSettings>(() => {
-    const s = StorageService.getSettings();
-    s.masterSwitch = true; // 默认开启策略
-    return s;
-  });
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [logs, setLogs] = useState<LogEntry[]>(StorageService.getLogs());
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [ip, setIp] = useState('加载中...');
   const [localIp, setLocalIp] = useState('加载中...');
   const [engineState, setEngineState] = useState<any>({
@@ -32,7 +26,7 @@ export default function App() {
     accountInfo: null,
     btcData: null,
     wsStatus: 'CLOSED',
-    masterSwitch: settings.masterSwitch,
+    masterSwitch: false,
     scanTimes: {
       stage0Duration: 0,
       stage0PDuration: 0,
@@ -55,136 +49,116 @@ export default function App() {
     }
   });
 
-  const engineRef = useRef<StrategyEngine | null>(null);
+  const clientRef = useRef<StrategyClient | null>(null);
 
-  // Auto-pull from Supabase on mount
+  // Initialize Strategy Client
   useEffect(() => {
+    const client = new StrategyClient((state) => {
+      setEngineState((prev: any) => ({ ...prev, ...state }));
+      if (state.ip) setIp(state.ip);
+    });
+    
+    clientRef.current = client;
+    client.connect();
+
+    // Initial data fetch
+    const initData = async () => {
+      const s = await client.getSettings();
+      if (s) setSettings(s);
+      
+      const l = await client.getLogs();
+      setLogs(l);
+
+      // Fetch Server IP
+      try {
+        const res = await axios.get('/api/ip');
+        setIp(res.data.ip);
+      } catch (e) {}
+
+      // Fetch Local IP
+      try {
+        const res = await axios.get('https://api.ipify.org?format=json');
+        setLocalIp(res.data.ip);
+      } catch (e) {}
+    };
+
+    initData();
+
+    // Periodic log refresh
+    const logInterval = setInterval(async () => {
+      if (clientRef.current) {
+        const l = await clientRef.current.getLogs();
+        setLogs(l);
+      }
+    }, 5000);
+
+    return () => {
+      client.close();
+      clearInterval(logInterval);
+    };
+  }, []);
+
+  // Auto-pull from Supabase on mount (if settings loaded)
+  useEffect(() => {
+    if (!settings) return;
+
     const pullRemoteSettings = async () => {
       try {
         const remoteSettings = await SupabaseService.pullSettings(settings);
-        if (remoteSettings) {
-          // 1. 同步配置
-          remoteSettings.masterSwitch = true; // 强制开启
+        if (remoteSettings && clientRef.current) {
+          remoteSettings.masterSwitch = true;
+          await clientRef.current.updateSettings(remoteSettings);
           setSettings(remoteSettings);
-          StorageService.saveSettings(remoteSettings);
-          if (engineRef.current) {
-            engineRef.current.updateSettings(remoteSettings);
-          }
-          
-          // 2. 记录日志
-          StorageService.addLog({ 
-            module: 'System', 
-            type: 'system', 
-            message: '已从 Supabase 同步配置并自动开启策略' 
-          });
-          setLogs(StorageService.getLogs());
-
-          // 3. 确保开启状态
-          handleToggleMaster(true);
-        } else {
-          // 如果拉取失败，仍然开启本地开关
           handleToggleMaster(true);
         }
       } catch (e) {
         console.error('Failed to auto-pull settings from Supabase:', e);
-        handleToggleMaster(true);
-      }
-    };
-    pullRemoteSettings();
-  }, []);
-
-  // Initialize Strategy Engine
-  useEffect(() => {
-    const engine = new StrategyEngine(settings, (state) => {
-      setEngineState((prev: any) => ({ ...prev, ...state }));
-      if (state.ip) setIp(state.ip);
-      // Sync logs when they change (StorageService adds them, but we need to update UI)
-      setLogs(StorageService.getLogs());
-    });
-    
-    engineRef.current = engine;
-    engine.start();
-
-    // Fetch IPs
-    const binance = new BinanceService(settings.binance.apiKey, settings.binance.secretKey, settings.binance.baseUrl);
-    
-    // Test backend connectivity
-    axios.get('/api/test')
-      .then(res => console.log('Backend test response:', res.data))
-      .catch(err => console.error('Backend test failed:', err));
-
-    const fetchIp = async (retryCount = 0) => {
-      try {
-        const ip = await binance.getIp();
-        console.log(`Fetched server IP (attempt ${retryCount + 1}):`, ip);
-        if (ip !== 'Unknown') {
-          setIp(ip);
-        } else if (retryCount < 3) {
-          console.warn('Server IP is Unknown, retrying in 2s...');
-          setTimeout(() => fetchIp(retryCount + 1), 2000);
-        }
-      } catch (err) {
-        console.error('Error in fetchIp:', err);
       }
     };
     
-    fetchIp();
-    
-    axios.get('https://api.ipify.org?format=json')
-      .then(res => {
-        console.log('Local IP fetched:', res.data.ip);
-        setLocalIp(res.data.ip);
-      })
-      .catch((err) => {
-        console.error('Local IP fetch failed:', err);
-        setLocalIp('获取失败');
-      });
-
-    return () => {
-      if (engineRef.current) {
-        engineRef.current.stop();
-      }
-    };
-  }, []);
-
-  const handleSaveSettings = (newSettings: AppSettings) => {
-    setSettings(newSettings);
-    StorageService.saveSettings(newSettings);
-    if (engineRef.current) {
-      engineRef.current.updateSettings(newSettings);
+    // Only pull if we haven't pulled yet in this session
+    // (Simple heuristic: if masterSwitch is false, maybe it's fresh)
+    if (!settings.masterSwitch) {
+      pullRemoteSettings();
     }
-    setLogs(StorageService.getLogs());
+  }, [settings?.binance?.apiKey]); // Use a stable property to trigger once
+
+  const handleSaveSettings = async (newSettings: AppSettings) => {
+    if (clientRef.current) {
+      await clientRef.current.updateSettings(newSettings);
+      setSettings(newSettings);
+      const l = await clientRef.current.getLogs();
+      setLogs(l);
+    }
   };
 
-  const handleToggleMaster = (val: boolean) => {
-    if (engineRef.current) {
-      engineRef.current.setMasterSwitch(val);
+  const handleToggleMaster = async (val: boolean) => {
+    if (clientRef.current) {
+      await clientRef.current.setMasterSwitch(val);
       setEngineState((prev: any) => ({ ...prev, masterSwitch: val }));
-      StorageService.addLog({ 
-        module: 'System', 
-        type: 'system', 
-        message: `策略总开关已${val ? '开启' : '关闭'}` 
-      });
-      setLogs(StorageService.getLogs());
+      const l = await clientRef.current.getLogs();
+      setLogs(l);
     }
   };
 
   const handleClearLogs = () => {
-    StorageService.clearLogs();
+    // Server-side clear logs not implemented yet, but we can filter locally or add endpoint
     setLogs([]);
   };
 
   const refreshIp = async () => {
     setIp('正在刷新...');
     try {
-      const binance = new BinanceService(settings.binance.apiKey, settings.binance.secretKey, settings.binance.baseUrl);
-      const newIp = await binance.getIp();
-      setIp(newIp);
+      const res = await axios.get('/api/ip');
+      setIp(res.data.ip);
     } catch (err) {
-      console.error('Refresh IP failed:', err);
       setIp('获取失败');
     }
   };
+
+  if (!settings) {
+    return <div className="flex items-center justify-center h-screen">正在加载配置...</div>;
+  }
 
   return (
     <Layout 
@@ -198,10 +172,10 @@ export default function App() {
       {activeTab === 'scanner' && (
         <ScannerView 
           state={engineState} 
-          onForceStage0={() => engineRef.current?.forceRunStage0()}
-          onForceStage0P={() => engineRef.current?.forceRunStage0P()}
-          onForceStage1={() => engineRef.current?.forceRunStage1()}
-          onForceStage2={() => engineRef.current?.forceRunStage2()}
+          onForceStage0={() => clientRef.current?.forceScan(0)}
+          onForceStage0P={() => clientRef.current?.forceScan('0P')}
+          onForceStage1={() => clientRef.current?.forceScan(1)}
+          onForceStage2={() => clientRef.current?.forceScan(2)}
         />
       )}
       {activeTab === 'logs' && <LogView logs={logs} onClear={handleClearLogs} />}

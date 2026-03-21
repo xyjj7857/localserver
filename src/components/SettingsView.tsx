@@ -1,18 +1,20 @@
 import React, { useState } from 'react';
+import axios from 'axios';
 import { AppSettings } from '../types';
 import { Save, Eye, EyeOff, RotateCcw, CloudDownload, CloudUpload } from 'lucide-react';
 import { DEFAULT_SETTINGS } from '../constants';
-import { SupabaseService } from '../services/supabase';
-import { StorageService } from '../services/storage';
-
 interface SettingsViewProps {
   settings: AppSettings;
   onSave: (settings: AppSettings) => void;
   ip: string;
   onRefreshIp: () => void;
+  onSyncPush: () => Promise<void>;
+  onSyncPull: () => Promise<void>;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, ip, onRefreshIp }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ 
+  settings, onSave, ip, onRefreshIp, onSyncPush, onSyncPull 
+}) => {
   const [localSettings, setLocalSettings] = useState(settings);
   const [showSecrets, setShowSecrets] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -59,18 +61,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, ip
   const handleSave = async () => {
     setIsSyncing(true);
     try {
-      // First save locally
-      onSave(localSettings);
+      // First save locally (via backend API)
+      await onSave(localSettings);
       
-      // Then push to Supabase
-      await SupabaseService.pushSettings(localSettings);
-      
-      // Log success
-      StorageService.addLog({
-        module: 'System',
-        type: 'system',
-        message: '已同步到sup'
-      });
+      // Then push to Supabase (via backend API)
+      await onSyncPush();
       
       alert('设置已成功保存并同步到 Supabase！');
     } catch (e: any) {
@@ -85,30 +80,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, ip
     
     setIsSyncing(true);
     try {
-      // Use original saved settings as base, but UI credentials for the pull
-      const remoteSettings = await SupabaseService.pullSettings({
-        ...settings,
-        supabase: localSettings.supabase
-      });
-      
-      if (remoteSettings) {
-        // 1. Update local state for immediate UI feedback
-        setLocalSettings(remoteSettings);
-        
-        // 2. Add log
-        StorageService.addLog({
-          module: 'System',
-          type: 'system',
-          message: '已从 Supabase 同步回配置'
-        });
-
-        // 3. Update global state in App.tsx (this will also save to localStorage and refresh logs)
-        onSave(remoteSettings);
-        
-        alert('已成功从 Supabase 拉取最新配置！');
-      } else {
-        alert('未能从 Supabase 获取到配置数据，请检查配置或表是否存在。');
-      }
+      await onSyncPull();
+      alert('已成功从 Supabase 拉取最新配置！');
     } catch (e: any) {
       alert(`拉取失败: ${e.message}`);
     } finally {
@@ -160,14 +133,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, ip
           <button 
             onClick={async () => {
               try {
-                const binance = new (await import('../services/binance')).BinanceService(
-                  localSettings.binance.apiKey,
-                  localSettings.binance.secretKey,
-                  localSettings.binance.baseUrl
-                );
-                binance.setIpSelection(localSettings.ipSelection);
-                await binance.getAccountInfo();
-                alert('连接成功！API 密钥及 IP 设置均正常。');
+                // Use backend proxy for testing
+                const res = await axios.post('/api/proxy', {
+                  url: `${localSettings.binance.baseUrl}/fapi/v2/account`,
+                  method: 'GET',
+                  headers: {
+                    'X-MBX-APIKEY': localSettings.binance.apiKey
+                  }
+                });
+                if (res.status === 200) {
+                  alert('连接成功！API 密钥及 IP 设置均正常。');
+                } else {
+                  alert(`连接失败: ${res.data.msg || '未知错误'}`);
+                }
               } catch (e: any) {
                 alert(`连接失败: ${e.message}`);
               }

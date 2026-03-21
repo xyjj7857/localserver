@@ -6,7 +6,6 @@ export class BinanceService {
   private secretKey: string;
   private baseUrl: string;
   private timeOffset: number = 0;
-  private ipSelection: 'local' | 'proxy' = 'proxy';
 
   constructor(apiKey: string, secretKey: string, baseUrl: string) {
     this.apiKey = apiKey.trim();
@@ -15,31 +14,21 @@ export class BinanceService {
     this.syncTime();
   }
 
-  setIpSelection(selection: 'local' | 'proxy') {
-    this.ipSelection = selection;
-  }
-
   async syncTime() {
     try {
       const start = Date.now();
       const url = `${this.baseUrl}/fapi/v1/time`;
-      let data;
-
-      if (this.ipSelection === 'proxy') {
-        const response = await axios.post('/api/proxy', { url, method: 'GET' });
-        data = response.data;
-      } else {
-        const response = await axios.get(url);
-        data = response.data;
-      }
+      
+      const response = await axios.get(url, { timeout: 10000 });
+      const data = response.data;
 
       const end = Date.now();
       const serverTime = data.serverTime;
       // Offset = ServerTime - (LocalTime + Latency/2)
       this.timeOffset = serverTime - (start + (end - start) / 2);
-      console.log(`Binance Time Synced. Offset: ${this.timeOffset}ms`);
+      console.log(`[Server] Binance Time Synced. Offset: ${this.timeOffset}ms`);
     } catch (e) {
-      console.error('Failed to sync time with Binance', e);
+      console.error('[Server] Failed to sync time with Binance', e);
     }
   }
 
@@ -53,7 +42,7 @@ export class BinanceService {
 
     if (signed) {
       requestParams.timestamp = timestamp;
-      requestParams.recvWindow = 60000; // Maximum allowed recvWindow
+      requestParams.recvWindow = 60000;
     }
 
     let queryString = Object.entries(requestParams)
@@ -71,54 +60,38 @@ export class BinanceService {
     };
     
     try {
-      let data;
-
-      if (this.ipSelection === 'proxy') {
-        const response = await axios.post('/api/proxy', { url, method, headers });
-        data = response.data;
-      } else {
-        const response = await axios({
-          url,
-          method,
-          headers,
-          timeout: 15000
-        });
-        data = response.data;
-      }
-
-      return data;
+      const response = await axios({
+        url,
+        method,
+        headers,
+        timeout: 20000
+      });
+      return response.data;
     } catch (e: any) {
-      // Handle axios error response
       const errorData = e.response?.data;
       const status = e.response?.status;
 
       if (errorData) {
-        // Handle recvWindow error by re-syncing and retrying once
         if (errorData.code === -1021 && !params._isRetry) {
-          console.warn('Timestamp error detected, re-syncing time and retrying...');
+          console.warn('[Server] Timestamp error detected, re-syncing time and retrying...');
           await this.syncTime();
           return this.request(method, path, { ...params, _isRetry: true }, signed);
         }
 
         if (errorData.code === -2015) {
-          const serverIp = this.ipSelection === 'proxy' ? await this.getIp() : '本地 IP';
-          throw new Error(`币安 API 权限/IP 错误: 请确保已在币安 API 设置中勾选 "允许合约" 权限。如果开启了 IP 限制，请将当前请求 IP (${serverIp}) 加入白名单。`);
+          throw new Error(`币安 API 权限/IP 错误: 请确保已在币安 API 设置中勾选 "允许合约" 权限。如果开启了 IP 限制，请将服务器公网 IP 加入白名单。`);
         }
 
         throw new Error(errorData.msg || `Binance API Error (${status})`);
       }
 
       if (!params._isRetry) {
-        console.warn('Network error detected, retrying once...');
-        if (this.ipSelection === 'local') {
-          console.warn('Switching to proxy for retry...');
-          this.ipSelection = 'proxy';
-        }
+        console.warn('[Server] Network error detected, retrying once...');
         await new Promise(resolve => setTimeout(resolve, 1000));
         return this.request(method, path, { ...params, _isRetry: true }, signed);
       }
       
-      console.error('Binance Request Failed:', e);
+      console.error('[Server] Binance Request Failed:', e.message);
       throw e;
     }
   }
@@ -200,17 +173,5 @@ export class BinanceService {
 
   async keepAliveListenKey() {
     return this.request('PUT', '/fapi/v1/listenKey', {}, false);
-  }
-
-  async getIp() {
-    // Fetch from our own backend to get server IP (always useful for whitelisting)
-    try {
-      console.log('Fetching server IP from /api/ip...');
-      const res = await axios.get('/api/ip');
-      return res.data.ip || 'Unknown';
-    } catch (e: any) {
-      console.error('Error fetching server IP:', e.message);
-      return 'Unknown';
-    }
   }
 }

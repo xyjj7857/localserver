@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { AppSettings } from '../types';
+import { AppSettings } from '../src/types';
 
 export class SupabaseService {
   private static client: SupabaseClient | null = null;
@@ -9,11 +9,10 @@ export class SupabaseService {
   private static getClient(url: string, key: string) {
     if (!url || !key) return null;
     
-    // If URL or Key changed, or client not initialized, create new one
     if (!this.client || this.lastUrl !== url || this.lastKey !== key) {
       this.client = createClient(url, key, {
         auth: {
-          persistSession: false, // Disable auth persistence to avoid multiple instance warnings
+          persistSession: false,
           autoRefreshToken: false,
           detectSessionInUrl: false
         }
@@ -32,7 +31,6 @@ export class SupabaseService {
 
     const row = this.settingsToRow(settings);
     
-    // Use upsert to ensure row with id=1 exists
     const { error } = await client
       .from(supaName)
       .upsert({ id: 1, ...row });

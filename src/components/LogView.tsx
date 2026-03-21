@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LogEntry } from '../types';
+import { LogEntry } from '../shared/types';
 import { ChevronDown, ChevronUp, Trash2, Clock, Info, AlertTriangle, XCircle, Download } from 'lucide-react';
 import { exportToExcel } from '../utils/exportUtils';
 

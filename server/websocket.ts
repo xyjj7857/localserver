@@ -10,7 +10,7 @@ export class BinanceWS {
   private onError?: (err: any) => void;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts: number = 0;
-  private maxReconnectAttempts: number = 50;
+  private maxReconnectAttempts: number = 100;
   private initialReconnectDelay: number = 1000;
   private maxReconnectDelay: number = 30000;
   private subscriptions: Set<string> = new Set();
@@ -62,11 +62,11 @@ export class BinanceWS {
       fullUrl = `${baseUrl}/${this.listenKey}`;
     }
 
-    console.log(`Connecting to WebSocket (Attempt ${this.reconnectAttempts + 1}):`, fullUrl);
+    console.log(`[Server] Connecting to Binance WebSocket (Attempt ${this.reconnectAttempts + 1}):`, fullUrl);
     try {
       this.ws = new WebSocket(fullUrl);
     } catch (e) {
-      console.error('WebSocket Creation Failed:', e);
+      console.error('[Server] WebSocket Creation Failed:', e);
       if (this.onError) this.onError(e);
       this.scheduleReconnect();
       return;
@@ -74,14 +74,14 @@ export class BinanceWS {
 
     const connectionTimeout = setTimeout(() => {
       if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
-        console.warn('WebSocket connection timeout, retrying...');
+        console.warn('[Server] WebSocket connection timeout, retrying...');
         this.ws.close();
       }
-    }, 10000);
+    }, 15000);
 
     this.ws.on('open', () => {
       clearTimeout(connectionTimeout);
-      console.log('WebSocket Connected');
+      console.log('[Server] Binance WebSocket Connected');
       this.reconnectAttempts = 0;
       this.lastPong = Date.now();
       this.startHeartbeat();
@@ -89,23 +89,21 @@ export class BinanceWS {
       this.resubscribe();
     });
 
-    this.ws.on('message', (event) => {
+    this.ws.on('message', (data) => {
       this.lastPong = Date.now();
       try {
-        const data = JSON.parse(event.toString());
-        if (data.e === 'ping') {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.e === 'ping') {
           this.ws?.send(JSON.stringify({ method: 'pong' }));
           return;
         }
-        this.onMessage(data);
-      } catch (e) {
-        // Handle non-JSON messages
-      }
+        this.onMessage(parsed);
+      } catch (e) {}
     });
 
     this.ws.on('close', (code, reason) => {
       clearTimeout(connectionTimeout);
-      console.log(`WebSocket Closed. Code: ${code}, Reason: ${reason}`);
+      console.log(`[Server] Binance WebSocket Closed. Code: ${code}, Reason: ${reason}`);
       this.stopHeartbeat();
       if (this.onClose) this.onClose();
       if (!this.isManualClose) {
@@ -114,7 +112,7 @@ export class BinanceWS {
     });
 
     this.ws.on('error', (err) => {
-      console.error('WebSocket Error:', err);
+      console.error('[Server] Binance WebSocket Error:', err);
       if (this.onError) this.onError(err);
     });
   }
@@ -125,7 +123,7 @@ export class BinanceWS {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         const idleTime = Date.now() - this.lastPong;
         if (idleTime > 60000) {
-          console.warn(`WebSocket Idle Timeout (${Math.floor(idleTime/1000)}s), reconnecting...`);
+          console.warn(`[Server] Binance WebSocket Idle Timeout (${Math.floor(idleTime/1000)}s), reconnecting...`);
           this.ws.close();
           return;
         }
@@ -150,7 +148,7 @@ export class BinanceWS {
       delay = Math.min(Math.pow(2, this.reconnectAttempts - 5) * 2000, this.maxReconnectDelay);
     }
     
-    console.log(`Scheduling WebSocket reconnect in ${delay}ms (Attempt ${this.reconnectAttempts + 1})`);
+    console.log(`[Server] Scheduling Binance WebSocket reconnect in ${delay}ms`);
     
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -202,7 +200,6 @@ export class BinanceWS {
     }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
     }
   }
 

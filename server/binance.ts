@@ -6,7 +6,7 @@ export class BinanceService {
   private secretKey: string;
   private baseUrl: string;
   private timeOffset: number = 0;
-  private ipSelection: 'local' | 'proxy' = 'local'; // Default to local on server
+  private ipSelection: 'local' | 'proxy' = 'local';
 
   constructor(apiKey: string, secretKey: string, baseUrl: string) {
     this.apiKey = apiKey.trim();
@@ -23,15 +23,17 @@ export class BinanceService {
     try {
       const start = Date.now();
       const url = `${this.baseUrl}/fapi/v1/time`;
+      
       const response = await axios.get(url, { timeout: 10000 });
       const data = response.data;
 
       const end = Date.now();
       const serverTime = data.serverTime;
+      // Offset = ServerTime - (LocalTime + Latency/2)
       this.timeOffset = serverTime - (start + (end - start) / 2);
-      console.log(`Binance Time Synced. Offset: ${this.timeOffset}ms`);
+      console.log(`[Server] Binance Time Synced. Offset: ${this.timeOffset}ms`);
     } catch (e) {
-      console.error('Failed to sync time with Binance', e);
+      console.error('[Server] Failed to sync time with Binance', e);
     }
   }
 
@@ -67,27 +69,34 @@ export class BinanceService {
         url,
         method,
         headers,
-        timeout: 15000,
-        validateStatus: () => true
+        timeout: 20000
       });
+      return response.data;
+    } catch (e: any) {
+      const errorData = e.response?.data;
+      const status = e.response?.status;
 
-      if (response.status >= 400) {
-        const errorData = response.data;
+      if (errorData) {
         if (errorData.code === -1021 && !params._isRetry) {
-          console.warn('Timestamp error detected, re-syncing time and retrying...');
+          console.warn('[Server] Timestamp error detected, re-syncing time and retrying...');
           await this.syncTime();
           return this.request(method, path, { ...params, _isRetry: true }, signed);
         }
-        throw new Error(errorData.msg || `Binance API Error (${response.status})`);
+
+        if (errorData.code === -2015) {
+          throw new Error(`币安 API 权限/IP 错误: 请确保已在币安 API 设置中勾选 "允许合约" 权限。如果开启了 IP 限制，请将服务器公网 IP 加入白名单。`);
+        }
+
+        throw new Error(errorData.msg || `Binance API Error (${status})`);
       }
 
-      return response.data;
-    } catch (e: any) {
       if (!params._isRetry) {
-        console.warn('Network error detected, retrying once...');
+        console.warn('[Server] Network error detected, retrying once...');
         await new Promise(resolve => setTimeout(resolve, 1000));
         return this.request(method, path, { ...params, _isRetry: true }, signed);
       }
+      
+      console.error('[Server] Binance Request Failed:', e.message);
       throw e;
     }
   }
@@ -123,11 +132,35 @@ export class BinanceService {
     return this.request('DELETE', '/fapi/v1/algoOrder', { algoId }, true);
   }
 
-  async createOrder(params: any) {
+  async createOrder(params: {
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    type: 'LIMIT' | 'MARKET' | 'STOP_MARKET' | 'TAKE_PROFIT_MARKET';
+    quantity?: string;
+    price?: string;
+    stopPrice?: string;
+    timeInForce?: 'GTC' | 'IOC' | 'FOK';
+    reduceOnly?: string;
+    closePosition?: string;
+    workingType?: 'MARK_PRICE' | 'CONTRACT_PRICE';
+    priceProtect?: string;
+    positionSide?: string;
+  }) {
     return this.request('POST', '/fapi/v1/order', params, true);
   }
 
-  async createAlgoOrder(params: any) {
+  async createAlgoOrder(params: {
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    algoType: 'VP' | 'TWAP' | 'CONDITIONAL';
+    type: 'STOP_MARKET' | 'TAKE_PROFIT_MARKET';
+    quantity?: string;
+    stopPrice?: string;
+    triggerPrice?: string;
+    reduceOnly?: string;
+    workingType?: 'MARK_PRICE' | 'CONTRACT_PRICE';
+    [key: string]: any;
+  }) {
     return this.request('POST', '/fapi/v1/algoOrder', params, true);
   }
 
@@ -145,15 +178,5 @@ export class BinanceService {
 
   async keepAliveListenKey() {
     return this.request('PUT', '/fapi/v1/listenKey', {}, false);
-  }
-
-  async getIp() {
-    // On server, we can just fetch from ipify or similar
-    try {
-      const res = await axios.get('https://api.ipify.org?format=json');
-      return res.data.ip || 'Unknown';
-    } catch (e) {
-      return 'Unknown';
-    }
   }
 }

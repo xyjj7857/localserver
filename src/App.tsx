@@ -6,8 +6,7 @@ import { ScannerView } from './components/ScannerView';
 import { LogView } from './components/LogView';
 import { SettingsView } from './components/SettingsView';
 import { StrategyClient } from './services/strategyClient';
-import { SupabaseService } from './services/supabase';
-import { AppSettings, LogEntry } from './types';
+import { AppSettings, LogEntry } from './shared/types';
 
 export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -97,31 +96,6 @@ export default function App() {
       clearInterval(logInterval);
     };
   }, []);
-
-  // Auto-pull from Supabase on mount (if settings loaded)
-  useEffect(() => {
-    if (!settings) return;
-
-    const pullRemoteSettings = async () => {
-      try {
-        const remoteSettings = await SupabaseService.pullSettings(settings);
-        if (remoteSettings && clientRef.current) {
-          remoteSettings.masterSwitch = true;
-          await clientRef.current.updateSettings(remoteSettings);
-          setSettings(remoteSettings);
-          handleToggleMaster(true);
-        }
-      } catch (e) {
-        console.error('Failed to auto-pull settings from Supabase:', e);
-      }
-    };
-    
-    // Only pull if we haven't pulled yet in this session
-    // (Simple heuristic: if masterSwitch is false, maybe it's fresh)
-    if (!settings.masterSwitch) {
-      pullRemoteSettings();
-    }
-  }, [settings?.binance?.apiKey]); // Use a stable property to trigger once
 
   const handleSaveSettings = async (newSettings: AppSettings) => {
     if (clientRef.current) {

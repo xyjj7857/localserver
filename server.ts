@@ -4,9 +4,10 @@ import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
 import path from 'path';
 import axios from 'axios';
-import { StrategyEngine } from "./server/services/strategy";
-import { StorageService } from "./server/services/storage";
-import { AppSettings } from "./server/types";
+import { StrategyEngine } from "./server/strategyEngine";
+import { StorageService } from "./server/storage";
+import { SupabaseService } from "./server/supabase";
+import { AppSettings } from "./src/shared/types";
 
 let cachedIP: string | null = null;
 let lastFetchTime = 0;
@@ -73,8 +74,20 @@ async function startServer() {
     });
   };
 
-  const initStrategy = () => {
-    const settings = StorageService.getSettings();
+  const initStrategy = async () => {
+    let settings = StorageService.getSettings();
+    
+    // Try to pull from Supabase on startup if configured
+    if (settings && settings.supabase.projectUrl && settings.supabase.publishableKey) {
+      console.log('[Supabase] Attempting to pull settings on startup...');
+      const remoteSettings = await SupabaseService.pullSettings(settings);
+      if (remoteSettings) {
+        console.log('[Supabase] Settings pulled successfully on startup');
+        settings = remoteSettings;
+        StorageService.saveSettings(settings);
+      }
+    }
+
     if (settings) {
       strategyEngine = new StrategyEngine(settings, (state) => {
         lastState = state;
@@ -121,12 +134,35 @@ async function startServer() {
   app.post("/api/settings", async (req, res) => {
     const settings = req.body as AppSettings;
     StorageService.saveSettings(settings);
+    
+    // Push to Supabase in background
+    if (settings.supabase.projectUrl && settings.supabase.publishableKey) {
+      SupabaseService.pushSettings(settings).catch(err => console.error('[Supabase] Background push failed:', err));
+    }
+
     if (strategyEngine) {
       await strategyEngine.updateSettings(settings);
     } else {
       initStrategy();
     }
     res.json({ success: true });
+  });
+
+  app.post("/api/test-connection", async (req, res) => {
+    const settings = req.body as AppSettings;
+    try {
+      const { BinanceService } = await import('./server/binance');
+      const binance = new BinanceService(
+        settings.binance.apiKey,
+        settings.binance.secretKey,
+        settings.binance.baseUrl
+      );
+      binance.setIpSelection(settings.ipSelection);
+      await binance.getAccountInfo();
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
   });
 
   app.get("/api/logs", (req, res) => {

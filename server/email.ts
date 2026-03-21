@@ -1,33 +1,33 @@
-import axios from 'axios';
+import { AppSettings } from "../src/shared/types";
+import nodemailer from 'nodemailer';
 
 export class EmailService {
-  static async sendEmail(params: {
-    from: string;
-    to: string;
-    smtp: string;
-    port: number;
-    pass: string;
-    subject: string;
-    text: string;
-  }) {
-    // We can call our own API or use nodemailer directly since we are on the server
-    // Let's use the API logic directly here to avoid external HTTP call to self
-    const nodemailer = await import('nodemailer');
-    const transporter = nodemailer.createTransport({
-      host: params.smtp,
-      port: params.port,
-      secure: params.port === 465,
-      auth: {
-        user: params.from,
-        pass: params.pass,
-      },
-    });
+  static async sendNotification(settings: AppSettings) {
+    const { from, to, smtp, port, pass } = settings.email;
+    const { supaName } = settings.supabase;
 
-    return transporter.sendMail({
-      from: params.from,
-      to: params.to,
-      subject: params.subject,
-      text: params.text,
-    });
+    try {
+      const transporter = nodemailer.createTransport({
+        host: smtp,
+        port: port,
+        secure: port === 465,
+        auth: {
+          user: from,
+          pass: pass,
+        },
+      });
+
+      const info = await transporter.sendMail({
+        from: from,
+        to: to,
+        subject: supaName,
+        text: supaName,
+      });
+
+      return { success: true, messageId: info.messageId };
+    } catch (e: any) {
+      console.error('[Server] Email Service Error:', e);
+      throw e;
+    }
   }
 }

@@ -1,20 +1,17 @@
 import React, { useState } from 'react';
 import axios from 'axios';
-import { AppSettings } from '../types';
-import { Save, Eye, EyeOff, RotateCcw, CloudDownload, CloudUpload } from 'lucide-react';
+import { AppSettings } from '../shared/types';
+import { Save, Eye, EyeOff, RotateCcw } from 'lucide-react';
 import { DEFAULT_SETTINGS } from '../constants';
+
 interface SettingsViewProps {
   settings: AppSettings;
   onSave: (settings: AppSettings) => void;
   ip: string;
   onRefreshIp: () => void;
-  onSyncPush: () => Promise<void>;
-  onSyncPull: () => Promise<void>;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ 
-  settings, onSave, ip, onRefreshIp, onSyncPush, onSyncPull 
-}) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, ip, onRefreshIp }) => {
   const [localSettings, setLocalSettings] = useState(settings);
   const [showSecrets, setShowSecrets] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -61,29 +58,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleSave = async () => {
     setIsSyncing(true);
     try {
-      // First save locally (via backend API)
-      await onSave(localSettings);
-      
-      // Then push to Supabase (via backend API)
-      await onSyncPush();
-      
-      alert('设置已成功保存并同步到 Supabase！');
+      onSave(localSettings);
+      alert('设置已成功保存！系统将自动同步到数据库。');
     } catch (e: any) {
-      alert(`保存成功，但 Supabase 同步失败: ${e.message}`);
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const handlePull = async () => {
-    if (!window.confirm('确定要从 Supabase 拉取配置吗？这将覆盖当前未保存的修改。')) return;
-    
-    setIsSyncing(true);
-    try {
-      await onSyncPull();
-      alert('已成功从 Supabase 拉取最新配置！');
-    } catch (e: any) {
-      alert(`拉取失败: ${e.message}`);
+      alert(`保存失败: ${e.message}`);
     } finally {
       setIsSyncing(false);
     }
@@ -94,13 +72,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm">
         <h2 className="text-xl font-bold text-gray-800">系统设置</h2>
         <div className="flex gap-2">
-          <button 
-            onClick={handlePull}
-            disabled={isSyncing}
-            className="flex items-center gap-2 bg-blue-50 text-blue-600 px-4 py-2 rounded-lg hover:bg-blue-100 transition-colors disabled:opacity-50"
-          >
-            <CloudDownload size={18} /> 从 Supabase 拉取
-          </button>
           <button 
             onClick={handleReset}
             disabled={isSyncing}
@@ -114,7 +85,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50"
           >
             {isSyncing ? <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" /> : <Save size={18} />}
-            保存并同步
+            保存设置
           </button>
         </div>
       </div>
@@ -133,21 +104,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <button 
             onClick={async () => {
               try {
-                // Use backend proxy for testing
-                const res = await axios.post('/api/proxy', {
-                  url: `${localSettings.binance.baseUrl}/fapi/v2/account`,
-                  method: 'GET',
-                  headers: {
-                    'X-MBX-APIKEY': localSettings.binance.apiKey
-                  }
-                });
-                if (res.status === 200) {
+                const res = await axios.post('/api/test-connection', localSettings);
+                if (res.data.success) {
                   alert('连接成功！API 密钥及 IP 设置均正常。');
-                } else {
-                  alert(`连接失败: ${res.data.msg || '未知错误'}`);
                 }
               } catch (e: any) {
-                alert(`连接失败: ${e.message}`);
+                alert(`连接失败: ${e.response?.data?.error || e.message}`);
               }
             }}
             className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-indigo-700 transition-all shadow-md active:scale-95"

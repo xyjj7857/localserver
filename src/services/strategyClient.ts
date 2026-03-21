@@ -1,4 +1,4 @@
-import { AppSettings, LogEntry } from "../types";
+import { AppSettings, LogEntry } from "../shared/types";
 
 export class StrategyClient {
   private ws: WebSocket | null = null;

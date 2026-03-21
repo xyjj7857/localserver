@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { AppSettings } from '../src/types';
+import { AppSettings } from '../src/shared/types';
 
 export class SupabaseService {
   private static client: SupabaseClient | null = null;
@@ -27,15 +27,23 @@ export class SupabaseService {
   static async pushSettings(settings: AppSettings): Promise<void> {
     const { projectUrl, publishableKey, supaName } = settings.supabase;
     const client = this.getClient(projectUrl, publishableKey);
-    if (!client) throw new Error('Supabase configuration missing');
+    if (!client) return;
 
     const row = this.settingsToRow(settings);
     
-    const { error } = await client
-      .from(supaName)
-      .upsert({ id: 1, ...row });
+    try {
+      const { error } = await client
+        .from(supaName)
+        .upsert({ id: 1, ...row });
 
-    if (error) throw error;
+      if (error) {
+        console.error(`[Supabase] Push Error: ${error.message}`);
+      } else {
+        console.log(`[Supabase] Settings pushed to table: ${supaName}`);
+      }
+    } catch (e: any) {
+      console.error(`[Supabase] Push Exception: ${e.message}`);
+    }
   }
 
   static async pullSettings(settings: AppSettings): Promise<AppSettings | null> {
@@ -43,23 +51,25 @@ export class SupabaseService {
     const client = this.getClient(projectUrl, publishableKey);
     if (!client) return null;
 
-    const { data, error } = await client
-      .from(supaName)
-      .select('*')
-      .eq('id', 1)
-      .maybeSingle();
+    try {
+      const { data, error } = await client
+        .from(supaName)
+        .select('*')
+        .eq('id', 1)
+        .maybeSingle();
 
-    if (error) {
-      console.error(`Supabase Pull Error (${supaName}):`, error.message);
+      if (error) {
+        console.error(`[Supabase] Pull Error: ${error.message}`);
+        return null;
+      }
+      
+      if (!data) return null;
+
+      return this.rowToSettings(data, settings);
+    } catch (e: any) {
+      console.error(`[Supabase] Pull Exception: ${e.message}`);
       return null;
     }
-    
-    if (!data) {
-      console.warn(`Supabase Pull: No data found for id=1 in table ${supaName}`);
-      return null;
-    }
-
-    return this.rowToSettings(data, settings);
   }
 
   private static settingsToRow(s: AppSettings) {

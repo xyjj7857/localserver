@@ -1,8 +1,9 @@
-import { AppSettings, Position, Order, LogEntry } from "../src/types";
+import { AppSettings, Position, Order, LogEntry } from "../src/shared/types";
 import { BinanceService } from "./binance";
 import { BinanceWS } from "./websocket";
 import { StorageService } from "./storage";
 import { EmailService } from "./email";
+import axios from 'axios';
 
 export class StrategyEngine {
   private settings: AppSettings;
@@ -26,15 +27,23 @@ export class StrategyEngine {
   private stage2Data15m: Map<string, any> = new Map();
   private stage2Data15mClosed: Map<string, any> = new Map();
   private bestSymbol: any = null;
-  private pendingSecondaryOrders: any = null;
+  private pendingSecondaryOrders: {
+    symbol: string;
+    entryPrice: number;
+    quantity: string;
+    targetOpenTime: number;
+    triggerTime: number;
+    kClosedPeriod: string;
+  } | null = null;
   private apiError: string | null = null;
   private symbolInfo: Map<string, any> = new Map();
   private listenKey: string | null = null;
-  private listenKeyTimer: any = null;
+  private listenKeyTimer: NodeJS.Timeout | null = null;
   private currentSubscriptions: Set<string> = new Set();
   private isStopped: boolean = false;
   private isExecutingMarketClose: boolean = false;
 
+  // Email Notification State
   private consecutiveReverseOrders: number = 0;
   private lastBalanceEmailTime: number = 0;
   private lastReverseEmailTime: number = 0;
@@ -43,6 +52,7 @@ export class StrategyEngine {
   private wsError: string | null = null;
   private ip: string = '加载中...';
 
+  // Timing info for UI
   private scanTimes = {
     stage0Duration: 0,
     stage0PDuration: 0,
@@ -64,9 +74,11 @@ export class StrategyEngine {
     bestSelectionTime: 0
   };
 
-  private mainLoopInterval: any = null;
-  private refreshInterval: any = null;
+  // Timers/Intervals
+  private mainLoopInterval: NodeJS.Timeout | null = null;
+  private refreshInterval: NodeJS.Timeout | null = null;
 
+  // Callbacks for UI updates
   private onUpdate: (state: any) => void;
 
   constructor(settings: AppSettings, onUpdate: (state: any) => void) {
@@ -80,6 +92,7 @@ export class StrategyEngine {
     this.ws = new BinanceWS(settings.binance.wsUrl, this.handleWSMessage.bind(this));
     this.masterSwitch = settings.masterSwitch;
 
+    // Restore state from SQLite
     const savedState = StorageService.getState();
     if (savedState) {
       this.stage0Results = savedState.stage0Results || [];
@@ -96,10 +109,10 @@ export class StrategyEngine {
   async start() {
     if (this.mainLoopInterval || this.isStopped) return;
     
-    this.binance.getIp().then(ip => {
-      this.ip = ip;
-      this.notifyUI();
-    });
+    console.log('[Server StrategyEngine] Starting...');
+    
+    // Fetch initial IP
+    this.refreshIP();
 
     this.startTimers();
 
@@ -108,10 +121,22 @@ export class StrategyEngine {
     }
   }
 
+  private async refreshIP() {
+    try {
+      const response = await axios.get('https://api.ipify.org?format=json', { timeout: 5000 });
+      this.ip = response.data.ip;
+      this.notifyUI();
+    } catch (e) {
+      console.error('[Server StrategyEngine] Failed to fetch IP:', e);
+    }
+  }
+
   private async initializeStrategy(retryCount = 0) {
     if (!this.masterSwitch || this.isStopped) return;
     
     try {
+      console.log(`[Server StrategyEngine] Initializing strategy (Attempt ${retryCount + 1})...`);
+      
       await this.binance.syncTime();
       if (this.isStopped) return;
       
@@ -140,7 +165,7 @@ export class StrategyEngine {
       this.runStage0();
       
     } catch (e: any) {
-      console.error(`[StrategyEngine] Initialization failed:`, e);
+      console.error(`[Server StrategyEngine] Initialization failed:`, e);
       if (retryCount < 5 && !this.isStopped) {
         const delay = Math.min(Math.pow(2, retryCount) * 2000, 30000);
         setTimeout(() => this.initializeStrategy(retryCount + 1), delay);
@@ -166,6 +191,7 @@ export class StrategyEngine {
         }, 30 * 60 * 1000);
       }
     } catch (e: any) {
+      console.error('[Server StrategyEngine] Failed to create listenKey', e);
       this.apiError = e.message;
       this.notifyUI();
     }
@@ -181,11 +207,14 @@ export class StrategyEngine {
 
   private updateSubscriptions() {
     const needed = new Set<string>();
+    
     if (this.masterSwitch) {
       needed.add('btcusdt@kline_15m');
+
       if (this.activePosition) {
         needed.add(`${this.activePosition.symbol.toLowerCase()}@kline_5m`);
       }
+
       this.stage1Results.forEach(s => {
         const sym = s.toLowerCase();
         needed.add(`${sym}@kline_5m`);
@@ -213,7 +242,7 @@ export class StrategyEngine {
         this.symbolInfo.set(s.symbol, s);
       });
     } catch (e) {
-      console.error('Failed to refresh exchange info', e);
+      console.error('[Server StrategyEngine] Failed to refresh exchange info', e);
     }
   }
 
@@ -225,8 +254,24 @@ export class StrategyEngine {
     this.refreshInterval = setInterval(() => this.refreshAccountInfo(), 5000);
   }
 
-  private lastRunBlock = { stage0: -1, stage0P: -1, stage1: -1, stage2: -1, order: -1 };
-  private isScanning = { stage0: false, stage0P: false, stage1: false, stage2: false, stage0Progress: 0, stage0PProgress: 0, stage1Progress: 0, stage2Progress: 0 };
+  private lastRunBlock = {
+    stage0: -1,
+    stage0P: -1,
+    stage1: -1,
+    stage2: -1,
+    order: -1
+  };
+
+  private isScanning = {
+    stage0: false,
+    stage0P: false,
+    stage1: false,
+    stage2: false,
+    stage0Progress: 0,
+    stage0PProgress: 0,
+    stage1Progress: 0,
+    stage2Progress: 0
+  };
 
   private parsePeriod(period: string): number {
     const val = parseInt(period);
@@ -247,6 +292,7 @@ export class StrategyEngine {
     const serverTime = Date.now() + this.binance.getTimeOffset();
     const serverSeconds = serverTime / 1000;
 
+    // Stage 0
     const p0 = this.parsePeriod(this.settings.scanner.stage0Period);
     const o0 = this.parseOffset(this.settings.scanner.stage0StartTime) % p0;
     const block0 = Math.floor(serverSeconds / p0);
@@ -255,6 +301,7 @@ export class StrategyEngine {
     this.scanTimes.stage0NextStart = next0;
     this.scanTimes.stage0Countdown = Math.max(0, Math.floor((next0 - Date.now()) / 1000));
 
+    // Stage 0P
     const p0p = this.parsePeriod(this.settings.scanner.stage0PPeriod);
     const o0p = this.parseOffset(this.settings.scanner.stage0PStartTime) % p0p;
     const block0p = Math.floor(serverSeconds / p0p);
@@ -263,6 +310,7 @@ export class StrategyEngine {
     this.scanTimes.stage0PNextStart = next0p;
     this.scanTimes.stage0PCountdown = Math.max(0, Math.floor((next0p - Date.now()) / 1000));
 
+    // Stage 1
     const p1 = this.parsePeriod(this.settings.scanner.stage1Period);
     const o1 = this.parseOffset(this.settings.scanner.stage1StartTime) % p1;
     const block1 = Math.floor(serverSeconds / p1);
@@ -271,6 +319,7 @@ export class StrategyEngine {
     this.scanTimes.stage1NextStart = next1;
     this.scanTimes.stage1Countdown = Math.max(0, Math.floor((next1 - Date.now()) / 1000));
 
+    // Stage 2
     const p2 = this.parsePeriod(this.settings.scanner.stage2Period);
     const o2 = this.parseOffset(this.settings.scanner.stage2StartTime) % p2;
     const block2 = Math.floor(serverSeconds / p2);
@@ -279,6 +328,7 @@ export class StrategyEngine {
     this.scanTimes.stage2NextStart = next2;
     this.scanTimes.stage2Countdown = Math.max(0, Math.floor((next2 - Date.now()) / 1000));
 
+    // Order
     const po = this.parsePeriod(this.settings.order.period);
     const oo = this.parseOffset(this.settings.order.startTime) % po;
     const blocko = Math.floor(serverSeconds / po);
@@ -292,16 +342,19 @@ export class StrategyEngine {
         StorageService.addLog({ module: 'Scanner', type: 'scanner', message: '倒计时归零，执行强制扫零' });
         this.runStage0();
       }
+      
       if (offset0p >= o0p && this.lastRunBlock.stage0P !== block0p) {
         this.lastRunBlock.stage0P = block0p;
         StorageService.addLog({ module: 'Scanner', type: 'scanner', message: '倒计时归零，执行第0阶段扫描' });
         this.runStage0P();
       }
+
       if (offset1 >= o1 && this.lastRunBlock.stage1 !== block1) {
         this.lastRunBlock.stage1 = block1;
         StorageService.addLog({ module: 'Scanner', type: 'scanner', message: '倒计时归零，执行强制扫一' });
         this.runStage1();
       }
+
       if (offset2 >= o2 && this.lastRunBlock.stage2 !== block2) {
         this.lastRunBlock.stage2 = block2;
         setTimeout(() => {
@@ -313,18 +366,27 @@ export class StrategyEngine {
       if (this.bestSymbol && !this.bestSymbol.isProcessed && !this.activePosition) {
         const windowEnd = oo + this.settings.order.forwardOrderWindow;
         const symbolBlock = Math.floor((this.scanTimes.bestSelectionTime + this.binance.getTimeOffset()) / 1000 / po);
+        
         if (symbolBlock === blocko) {
           if (offseto >= oo && offseto <= windowEnd) {
             if (this.lastRunBlock.order !== blocko) {
               this.lastRunBlock.order = blocko;
+              StorageService.addLog({ 
+                module: 'Order', 
+                type: 'order', 
+                message: `到达下单窗口期，执行下单: ${this.bestSymbol.symbol}` 
+              });
               this.executeTrade(this.bestSymbol);
               this.bestSymbol.isProcessed = true;
+              this.bestSymbol.processStatus = 'ordered';
             }
           } else if (offseto > windowEnd) {
             this.bestSymbol.isProcessed = true;
+            this.bestSymbol.processStatus = 'missed';
           }
         } else if (symbolBlock < blocko) {
           this.bestSymbol.isProcessed = true;
+          this.bestSymbol.processStatus = 'stale';
         }
       }
     }
@@ -339,6 +401,7 @@ export class StrategyEngine {
         }
       }
     }
+    
     this.notifyUI();
   }
 
@@ -346,14 +409,18 @@ export class StrategyEngine {
     if (!this.masterSwitch) return;
     try {
       const info = await this.binance.getAccountInfo();
+      if (!info) return;
+      
       this.accountInfo = info;
       this.apiError = null;
 
       if (this.settings.email.enabled && this.settings.email.balanceLimitEnabled) {
         const balance = parseFloat(info.totalWalletBalance);
-        if (balance >= this.settings.email.balanceLimit && Date.now() - this.lastBalanceEmailTime > 3600000) {
-          this.sendEmailNotification('账户余额达到或超过设定值');
-          this.lastBalanceEmailTime = Date.now();
+        if (balance >= this.settings.email.balanceLimit) {
+          if (Date.now() - this.lastBalanceEmailTime > 3600000) {
+            EmailService.sendNotification(this.settings).catch(console.error);
+            this.lastBalanceEmailTime = Date.now();
+          }
         }
       }
       
@@ -390,30 +457,46 @@ export class StrategyEngine {
           await this.cancelAllAlgoOrders(prevActive.symbol);
           if (prevActive.unrealizedProfit < 0) {
             this.consecutiveReverseOrders++;
-            if (this.settings.email.enabled && this.settings.email.reverseOrderLimitEnabled && this.consecutiveReverseOrders >= this.settings.email.reverseOrderLimit && Date.now() - this.lastReverseEmailTime > 3600000) {
-              this.sendEmailNotification('连续反向单达到上限');
-              this.lastReverseEmailTime = Date.now();
-            }
           } else {
             this.consecutiveReverseOrders = 0;
+          }
+        } else {
+          const currentAlgoOrders = Array.isArray(algoOrders) ? algoOrders : (algoOrders?.orders || []);
+          if (currentAlgoOrders.length > 0) {
+            for (const o of currentAlgoOrders) {
+              try { await this.binance.cancelAlgoOrder(o.algoId); } catch (e) {}
+            }
           }
         }
         this.activePosition = null;
       }
 
-      this.activeOrders = [...orders, ...(Array.isArray(algoOrders) ? algoOrders : (algoOrders?.orders || []))].map((o: any) => ({
+      const standardOrders = orders.map((o: any) => ({
         symbol: o.symbol,
-        orderId: o.orderId || o.algoId,
+        orderId: o.orderId,
         side: o.side,
-        type: o.type || `ALGO_${o.algoType}`,
-        amount: parseFloat(o.origQty || o.quantity),
+        type: o.type,
+        amount: parseFloat(o.origQty),
         price: parseFloat(o.price || o.stopPrice || '0'),
         time: o.time,
       }));
 
+      const algoOrdersList = Array.isArray(algoOrders) ? algoOrders : (algoOrders?.orders || []);
+      const processedAlgoOrders = algoOrdersList.map((o: any) => ({
+        symbol: o.symbol,
+        orderId: o.algoId,
+        side: o.side,
+        type: `ALGO_${o.algoType}_${o.type}`,
+        amount: parseFloat(o.quantity),
+        price: parseFloat(o.stopPrice || o.triggerPrice || '0'),
+        time: o.time,
+      }));
+
+      this.activeOrders = [...standardOrders, ...processedAlgoOrders];
       this.notifyUI();
       this.saveState();
     } catch (e: any) {
+      console.error('[Server StrategyEngine] Failed to refresh account info', e.message);
       this.apiError = e.message;
       this.notifyUI();
     }
@@ -421,28 +504,44 @@ export class StrategyEngine {
 
   private async handleWSMessage(data: any) {
     this.lastWSMessageTime = Date.now();
+
     if (data.e === 'ACCOUNT_UPDATE' || data.e === 'ORDER_TRADE_UPDATE') {
       await this.refreshAccountInfo();
     }
+
     if (data.e === 'kline') {
       const symbol = data.s.toLowerCase();
       const k = data.k;
-      if (symbol === 'btcusdt' && k.i === '15m') this.btcData = k;
+      
+      if (symbol === 'btcusdt' && k.i === '15m') {
+        this.btcData = k;
+      }
+      
       if (k.i === '5m') {
-        if (k.x || !this.stage2Data.has(symbol)) this.stage2Data.set(symbol, k);
+        if (k.x || !this.stage2Data.has(symbol)) {
+          this.stage2Data.set(symbol, k);
+        }
       } else if (k.i === '15m') {
         const prev = this.stage2Data15m.get(symbol);
-        if (prev && prev.t !== k.t) this.stage2Data15mClosed.set(symbol, prev);
+        if (prev && prev.t !== k.t) {
+          this.stage2Data15mClosed.set(symbol, prev);
+        }
         this.stage2Data15m.set(symbol, k);
-        if (k.x) this.stage2Data15mClosed.set(symbol, k);
+        if (k.x) {
+          this.stage2Data15mClosed.set(symbol, k);
+        }
       }
+
       if (this.activePosition && this.activePosition.symbol.toLowerCase() === symbol) {
         const currentPrice = parseFloat(k.c);
         this.activePosition.markPrice = currentPrice;
         this.activePosition.updateTime = Date.now();
-        const diff = this.activePosition.side === 'BUY' ? (currentPrice - this.activePosition.entryPrice) : (this.activePosition.entryPrice - currentPrice);
+        const diff = this.activePosition.side === 'BUY' 
+          ? (currentPrice - this.activePosition.entryPrice) 
+          : (this.activePosition.entryPrice - currentPrice);
         this.activePosition.unrealizedProfit = diff * this.activePosition.amount;
       }
+      
       this.notifyUI();
     }
   }
@@ -450,13 +549,17 @@ export class StrategyEngine {
   private async executeMarketClose() {
     if (!this.activePosition || this.isExecutingMarketClose) return;
     this.isExecutingMarketClose = true;
+    const symbol = this.activePosition.symbol;
+    const amount = this.activePosition.amount;
+    const leverage = this.activePosition.leverage;
+
     try {
-      const symbol = this.activePosition.symbol;
+      await this.binance.setLeverage(symbol, leverage);
       await this.binance.createOrder({
         symbol,
-        side: this.activePosition.side === 'BUY' ? 'SELL' : 'BUY',
+        side: 'SELL',
         type: 'MARKET',
-        quantity: this.activePosition.amount.toString(),
+        quantity: this.formatQuantity(symbol, amount),
         positionSide: 'BOTH'
       });
       await this.binance.cancelAllOrders(symbol);
@@ -477,7 +580,33 @@ export class StrategyEngine {
       for (const order of orders) {
         await this.binance.cancelAlgoOrder(order.algoId);
       }
-    } catch (e) {}
+    } catch (e: any) {}
+  }
+
+  private formatPrice(symbol: string, price: number): string {
+    const info = this.symbolInfo.get(symbol);
+    if (!info) return (price || 0).toString();
+    const filter = info.filters?.find((f: any) => f.filterType === 'PRICE_FILTER');
+    if (filter && filter.tickSize) {
+      const tickSize = parseFloat(filter.tickSize);
+      const precision = filter.tickSize.indexOf('.') > -1 ? filter.tickSize.split('.')[1].length : 0;
+      const rounded = Math.round(price / tickSize) * tickSize;
+      return rounded?.toFixed(precision);
+    }
+    return price?.toFixed(info.pricePrecision || 8);
+  }
+
+  private formatQuantity(symbol: string, qty: number): string {
+    const info = this.symbolInfo.get(symbol);
+    if (!info) return (qty || 0).toString();
+    const filter = info.filters?.find((f: any) => f.filterType === 'LOT_SIZE');
+    if (filter && filter.stepSize) {
+      const stepSize = parseFloat(filter.stepSize);
+      const precision = filter.stepSize.indexOf('.') > -1 ? filter.stepSize.split('.')[1].length : 0;
+      const rounded = Math.floor(qty / stepSize + 0.0000001) * stepSize;
+      return rounded?.toFixed(precision);
+    }
+    return qty?.toFixed(info.quantityPrecision || 8);
   }
 
   public async runStage0() {
@@ -486,39 +615,151 @@ export class StrategyEngine {
     this.isScanning.stage0Progress = 0;
     this.scanTimes.stage0LastStart = Date.now();
     this.notifyUI();
+
     try {
       const exchangeInfo = await this.binance.getExchangeInfo();
-      const symbols = exchangeInfo.symbols.filter((s: any) => s.quoteAsset === 'USDT' && s.status === 'TRADING');
-      this.stage0Results = symbols.map((s: any) => s.symbol);
+      this.isScanning.stage0Progress = 50;
+      const serverTime = Date.now() + this.binance.getTimeOffset();
+      const results: string[] = [];
+      const customMinutes = this.settings.scanner.stage0CustomMinutes || 15;
+      const intervalMs = customMinutes * 60 * 1000;
+
+      exchangeInfo.symbols.forEach((s: any) => {
+        if (s.quoteAsset === 'USDT' && s.contractType === 'PERPETUAL' && s.status === 'TRADING') {
+          const onboardDate = s.onboardDate;
+          if (onboardDate && onboardDate > 0) {
+            const kCount = Math.floor((serverTime - onboardDate) / intervalMs);
+            if (kCount >= this.settings.scanner.stage0KCountMin && kCount <= this.settings.scanner.stage0KCountMax) {
+              results.push(s.symbol);
+            }
+          } else {
+            results.push(s.symbol);
+          }
+        }
+      });
+
+      results.sort();
+      this.stage0Results = results;
+      this.scanTimes.stage0Duration = Date.now() - this.scanTimes.stage0LastStart;
+      this.saveState();
+      if (!this.settings.scanner.stage0PEnabled) {
+        this.stage0PResults = [...results];
+        this.stage0PReasons.clear();
+      }
+    } catch (e: any) {
+      StorageService.addLog({ module: 'Scanner', type: 'error', message: `全市场扫描失败: ${e.message}` });
+    } finally {
+      this.isScanning.stage0 = false;
       this.isScanning.stage0Progress = 100;
-    } catch (e) {}
-    this.isScanning.stage0 = false;
-    this.notifyUI();
+      this.notifyUI();
+    }
   }
 
   public async runStage0P() {
     if (!this.masterSwitch || this.isScanning.stage0P) return;
+    if (!this.settings.scanner.stage0PEnabled) {
+      this.stage0PResults = [...this.stage0Results];
+      this.stage0PReasons.clear();
+      this.notifyUI();
+      return;
+    }
     this.isScanning.stage0P = true;
     this.isScanning.stage0PProgress = 0;
     this.scanTimes.stage0PLastStart = Date.now();
     this.notifyUI();
-    this.stage0PResults = [...this.stage0Results];
-    this.isScanning.stage0PProgress = 100;
-    this.isScanning.stage0P = false;
-    this.notifyUI();
+
+    try {
+      const targets = [...this.stage0Results];
+      const results: string[] = [];
+      const reasons: Map<string, string> = new Map();
+      const total = targets.length;
+      for (let i = 0; i < targets.length; i += 20) {
+        const batch = targets.slice(i, i + 20);
+        await Promise.all(batch.map(async (symbol) => {
+          try {
+            let isOk = true;
+            let reason = '';
+            if (this.settings.scanner.stage0P15mEnabled) {
+              const klines = await this.binance.getKLines(symbol, '15m', this.settings.scanner.stage0P15mCount + 1);
+              for (const k of klines.slice(0, -1)) {
+                const change = Math.abs(((parseFloat(k[4]) - parseFloat(k[1])) / parseFloat(k[1])) * 100);
+                if (change >= this.settings.scanner.stage0P15mRef) { isOk = false; reason = `15m涨跌幅 ${change.toFixed(2)}%`; break; }
+              }
+            }
+            if (isOk && this.settings.scanner.stage0P1hEnabled) {
+              const klines = await this.binance.getKLines(symbol, '1h', this.settings.scanner.stage0P1hCount + 1);
+              for (const k of klines.slice(0, -1)) {
+                const change = Math.abs(((parseFloat(k[4]) - parseFloat(k[1])) / parseFloat(k[1])) * 100);
+                if (change >= this.settings.scanner.stage0P1hRef) { isOk = false; reason = `1h涨跌幅 ${change.toFixed(2)}%`; break; }
+              }
+            }
+            if (isOk) results.push(symbol); else reasons.set(symbol, reason);
+          } catch (e) {}
+        }));
+        this.isScanning.stage0PProgress = Math.min(100, ((i + 20) / total) * 100);
+        this.notifyUI();
+      }
+      results.sort();
+      this.stage0PResults = results;
+      this.stage0PReasons = reasons;
+      this.scanTimes.stage0PDuration = Date.now() - this.scanTimes.stage0PLastStart;
+      this.saveState();
+    } catch (e: any) {
+      StorageService.addLog({ module: 'Scanner', type: 'error', message: `第0阶段扫描失败: ${e.message}` });
+    } finally {
+      this.isScanning.stage0P = false;
+      this.isScanning.stage0PProgress = 100;
+      this.notifyUI();
+    }
   }
 
   public async runStage1() {
     if (!this.masterSwitch || this.isScanning.stage1) return;
+    this.bestSymbol = null;
     this.isScanning.stage1 = true;
     this.isScanning.stage1Progress = 0;
     this.scanTimes.stage1LastStart = Date.now();
     this.notifyUI();
-    this.stage1Results = [...this.stage0PResults];
-    this.isScanning.stage1Progress = 100;
-    this.isScanning.stage1 = false;
-    this.updateSubscriptions();
-    this.notifyUI();
+
+    try {
+      const whitelist = this.settings.scanner.whitelist.split(' ').filter(s => s);
+      const blacklist = this.settings.scanner.blacklist.split(' ').filter(s => s);
+      let targets = [...this.stage0PResults];
+      if (whitelist.length > 0) targets = [...new Set([...targets, ...whitelist])];
+      targets = targets.filter(s => !blacklist.includes(s));
+      const results: string[] = [];
+      const total = targets.length;
+      for (let i = 0; i < targets.length; i += 20) {
+        const batch = targets.slice(i, i + 20);
+        await Promise.all(batch.map(async (symbol: string) => {
+          try {
+            const klines = await this.binance.getKLines(symbol, this.settings.scanner.stage1Period, 1);
+            if (klines.length > 0) {
+              const [time, open, high, low, close, volume, closeTime, quoteVolume] = klines[0];
+              const km1 = parseFloat(quoteVolume);
+              const k1 = ((parseFloat(close) - parseFloat(open)) / parseFloat(open)) * 100;
+              let match = true;
+              if (this.settings.scanner.stage1Cond1Enabled && km1 < this.settings.scanner.stage1MinVolume) match = false;
+              if (this.settings.scanner.stage1Cond2Enabled && (k1 < this.settings.scanner.stage1KLineMin || k1 > this.settings.scanner.stage1KLineMax)) match = false;
+              if (match) results.push(symbol);
+            }
+          } catch (e) {}
+        }));
+        this.isScanning.stage1Progress = Math.min(100, ((i + 20) / total) * 100);
+        this.notifyUI();
+      }
+      results.sort();
+      this.stage1Results = results;
+      this.scanTimes.stage1Duration = Date.now() - this.scanTimes.stage1LastStart;
+      this.saveState();
+      this.updateSubscriptions();
+      await this.binance.syncTime();
+    } catch (e: any) {
+      StorageService.addLog({ module: 'Scanner', type: 'error', message: `第一阶段扫描失败: ${e.message}` });
+    } finally {
+      this.isScanning.stage1 = false;
+      this.notifyUI();
+    }
   }
 
   public async runStage2() {
@@ -527,55 +768,83 @@ export class StrategyEngine {
     this.isScanning.stage2Progress = 0;
     this.scanTimes.stage2LastStart = Date.now();
     this.notifyUI();
-    this.stage2Results = this.stage1Results.map(s => ({ symbol: s, score: Math.random() }));
-    this.bestSymbol = this.stage2Results[0];
-    this.scanTimes.bestSelectionTime = Date.now();
-    this.isScanning.stage2Progress = 100;
-    this.isScanning.stage2 = false;
-    this.notifyUI();
-  }
 
-  private async executeTrade(symbolData: any) {
-    // Simplified trade execution for backend
-    StorageService.addLog({ module: 'Order', type: 'order', message: `执行下单: ${symbolData.symbol}` });
+    try {
+      const candidates: any[] = [];
+      const failed: any[] = [];
+      const total = this.stage1Results.length;
+      let processed = 0;
+      for (const symbol of this.stage1Results) {
+        processed++;
+        this.isScanning.stage2Progress = (processed / total) * 100;
+        const k5 = this.stage2Data.get(symbol.toLowerCase());
+        const k15 = this.stage2Data15m.get(symbol.toLowerCase());
+        const k15Closed = this.stage2Data15mClosed.get(symbol.toLowerCase());
+        if (!k5 || !k15) { failed.push({ symbol, reason: '无K线数据' }); continue; }
+        const k5Change = ((parseFloat(k5.c) - parseFloat(k5.o)) / parseFloat(k5.o)) * 100;
+        const kAbsChange = ((parseFloat(k15.c) - parseFloat(k15.o)) / parseFloat(k15.o)) * 100;
+        const aChange = ((parseFloat(k15.h) - parseFloat(k15.c)) / parseFloat(k15.c)) * 100;
+        const volume = parseFloat(k15.q);
+        let match = true;
+        if (this.settings.scanner.stage2Cond1Enabled && (kAbsChange < this.settings.scanner.stage2K21 || kAbsChange > this.settings.scanner.stage2K22)) match = false;
+        const lastTrade = this.cooldowns.get(symbol) || 0;
+        if (Date.now() - lastTrade < this.settings.scanner.stage2Cooldown * 60000) { failed.push({ symbol, reason: '冷却中' }); continue; }
+        const coinData = { symbol, volume, price: k15Closed ? parseFloat(k15Closed.c) : parseFloat(k15.o), k5Change, k15Change: kAbsChange, aChange };
+        if (match) candidates.push(coinData); else failed.push({ ...coinData, reason: '不匹配' });
+      }
+      candidates.sort((a, b) => b.volume - a.volume);
+      this.stage2Results = candidates;
+      this.stage2Failed = failed;
+      this.scanTimes.stage2Duration = Date.now() - this.scanTimes.stage2LastStart;
+      if (candidates.length > 0) {
+        this.bestSymbol = candidates[0];
+        this.scanTimes.bestSelectionTime = Date.now();
+      }
+    } catch (e: any) {
+      StorageService.addLog({ module: 'Scanner', type: 'error', message: `第二阶段扫描失败: ${e.message}` });
+    } finally {
+      this.isScanning.stage2 = false;
+      this.isScanning.stage2Progress = 100;
+      this.notifyUI();
+    }
   }
 
   private async placeSecondaryOrders(pending: any) {
-    // Simplified secondary orders
-  }
-
-  private async sendEmailNotification(reason: string) {
-    if (!this.settings.email.enabled) return;
     try {
-      await EmailService.sendEmail({
-        ...this.settings.email,
-        subject: `交易机器人通知: ${reason}`,
-        text: `您的交易机器人触发了通知: ${reason}\n当前余额: ${this.accountInfo?.totalWalletBalance || '未知'}`
-      });
-    } catch (e) {}
+      const { symbol, quantity, targetOpenTime } = pending;
+      const klines = await this.binance.getKLines(symbol, this.settings.order.kClosedPeriod as any, 5);
+      const finalK = klines.find((k: any) => k[0] === targetOpenTime) || klines[klines.length - 2];
+      const kOpen = parseFloat(finalK[1]);
+      const kClose = parseFloat(finalK[4]);
+      const k15Abs = Math.abs(((kClose - kOpen) / kOpen) * 100);
+      const tpPrice = kClose * (1 + (k15Abs * this.settings.order.takeProfitRatio) / 10000);
+      const slPrice = kClose * (1 - (k15Abs * this.settings.order.stopLossRatio) / 10000);
+      await this.binance.createOrder({ symbol, side: 'SELL', type: 'LIMIT', quantity, price: this.formatPrice(symbol, tpPrice), reduceOnly: 'true' });
+      await this.binance.createAlgoOrder({ symbol, side: 'SELL', algoType: 'CONDITIONAL', type: 'STOP_MARKET', stopPrice: this.formatPrice(symbol, slPrice), triggerPrice: this.formatPrice(symbol, slPrice), quantity, reduceOnly: 'true' });
+      this.refreshAccountInfo();
+    } catch (e: any) {
+      StorageService.addLog({ module: 'Order', type: 'error', message: `二次下单失败: ${e.message}` });
+    }
   }
 
-  private notifyUI() {
-    const state = {
-      stage0Results: this.stage0Results,
-      stage0PResults: this.stage0PResults,
-      stage0PReasons: Object.fromEntries(this.stage0PReasons),
-      stage1Results: this.stage1Results,
-      stage2Results: this.stage2Results,
-      activePosition: this.activePosition,
-      activeOrders: this.activeOrders,
-      accountInfo: this.accountInfo,
-      btcData: this.btcData,
-      wsStatus: this.ws.status,
-      masterSwitch: this.masterSwitch,
-      scanTimes: this.scanTimes,
-      isScanning: this.isScanning,
-      apiError: this.apiError,
-      wsError: this.wsError,
-      ip: this.ip,
-      consecutiveReverseOrders: this.consecutiveReverseOrders
-    };
-    this.onUpdate(state);
+  private async executeTrade(best: any) {
+    if (this.activePosition) return;
+    try {
+      const symbol = best.symbol;
+      const balance = parseFloat(this.accountInfo?.totalWalletBalance || '0');
+      const qty = this.formatQuantity(symbol, (Math.min(balance * this.settings.order.leverage * this.settings.order.positionRatio, this.settings.order.maxPositionAmount)) / best.price);
+      await this.binance.setLeverage(symbol, this.settings.order.leverage);
+      const order = await this.binance.createOrder({ symbol, side: 'BUY', type: 'MARKET', quantity: qty });
+      const entryPrice = order.avgPrice ? parseFloat(order.avgPrice) : best.price;
+      this.activePosition = { symbol, side: 'BUY', amount: parseFloat(qty), leverage: this.settings.order.leverage, entryPrice, markPrice: entryPrice, unrealizedProfit: 0, updateTime: Date.now(), entryTime: Date.now() };
+      const periodSec = this.parsePeriod(this.settings.order.kClosedPeriod);
+      const targetOpenTimeSec = Math.floor((Date.now() / 1000 - 180) / periodSec) * periodSec;
+      this.pendingSecondaryOrders = { symbol, entryPrice, quantity: qty, targetOpenTime: targetOpenTimeSec * 1000, triggerTime: (targetOpenTimeSec + periodSec) * 1000 + 200, kClosedPeriod: this.settings.order.kClosedPeriod };
+      this.cooldowns.set(symbol, Date.now());
+      this.saveState();
+    } catch (e: any) {
+      StorageService.addLog({ module: 'Order', type: 'error', message: `下单失败: ${e.message}` });
+    }
   }
 
   private saveState() {
@@ -584,27 +853,75 @@ export class StrategyEngine {
       stage0PResults: this.stage0PResults,
       stage1Results: this.stage1Results,
       cooldowns: Object.fromEntries(this.cooldowns),
-      consecutiveReverseOrders: this.consecutiveReverseOrders,
-      activePosition: this.activePosition
+      activePosition: this.activePosition,
+      consecutiveReverseOrders: this.consecutiveReverseOrders
     });
   }
 
-  public setMasterSwitch(val: boolean) {
+  private notifyUI() {
+    if (this.isStopped) return;
+    this.onUpdate({
+      stage0Results: this.stage0Results,
+      stage0PResults: this.stage0PResults,
+      stage0PReasons: Object.fromEntries(this.stage0PReasons),
+      stage1Results: this.stage1Results,
+      stage2Results: this.stage2Results,
+      stage2Failed: this.stage2Failed,
+      activePosition: this.activePosition,
+      activeOrders: this.activeOrders,
+      accountInfo: this.accountInfo,
+      btcData: this.btcData,
+      wsStatus: this.ws.status,
+      wsError: this.wsError,
+      lastWSMessageTime: this.lastWSMessageTime,
+      apiError: this.apiError,
+      ip: this.ip,
+      scanTimes: this.scanTimes,
+      bestSymbol: this.bestSymbol,
+      isScanning: this.isScanning
+    });
+  }
+
+  async updateSettings(settings: AppSettings) {
+    this.settings = settings;
+    this.masterSwitch = settings.masterSwitch;
+    this.binance = new BinanceService(settings.binance.apiKey, settings.binance.secretKey, settings.binance.baseUrl);
+    this.ws.setUrl(settings.binance.wsUrl);
+    if (this.masterSwitch) {
+      await this.binance.syncTime();
+      await this.refreshAccountInfo();
+    }
+  }
+
+  setMasterSwitch(val: boolean) {
+    const prev = this.masterSwitch;
     this.masterSwitch = val;
     this.settings.masterSwitch = val;
     StorageService.saveSettings(this.settings);
-    if (val) {
+    if (val && !prev) {
       this.initializeStrategy();
-    } else {
+    } else if (!val && prev) {
       this.ws.close();
+      if (this.listenKeyTimer) clearInterval(this.listenKeyTimer);
+      this.listenKeyTimer = null;
+      this.listenKey = null;
+      this.notifyUI();
     }
-    this.notifyUI();
   }
 
-  public updateSettings(newSettings: AppSettings) {
-    this.settings = newSettings;
-    this.binance = new BinanceService(newSettings.binance.apiKey, newSettings.binance.secretKey, newSettings.binance.baseUrl);
-    this.ws.setUrl(newSettings.binance.wsUrl);
-    this.notifyUI();
+  async forceRunStage0() {
+    await this.runStage0();
+  }
+
+  async forceRunStage0P() {
+    await this.runStage0P();
+  }
+
+  async forceRunStage1() {
+    await this.runStage1();
+  }
+
+  async forceRunStage2() {
+    await this.runStage2();
   }
 }

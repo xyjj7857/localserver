@@ -1,10 +1,19 @@
 FROM node:22-slim
 
+# Install build dependencies for native modules (better-sqlite3)
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Install dependencies
+# Copy package files
 COPY package*.json ./
-RUN npm install
+
+# Install dependencies
+RUN npm ci
 
 # Copy source code
 COPY . .
@@ -15,7 +24,8 @@ RUN npm run build
 # Expose port
 EXPOSE 3000
 
-# Start the server
-# Note: server.ts is run directly via node in the start script
-# Node 22+ supports stripping types automatically
-CMD ["npm", "start"]
+# Set environment to production
+ENV NODE_ENV=production
+
+# Start the server using tsx (since server.ts is TypeScript)
+CMD ["npx", "tsx", "server.ts"]

@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Search, FileText, Settings, Power, Lock } from 'lucide-react';
+import { LayoutDashboard, Search, FileText, Settings, Power } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -7,11 +7,10 @@ interface LayoutProps {
   setActiveTab: (tab: string) => void;
   masterSwitch: boolean;
   onToggleMaster: (val: boolean) => void;
-  onLock: () => void;
   serverIp: string;
 }
 
-export const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, masterSwitch, onToggleMaster, onLock, serverIp }) => {
+export const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, masterSwitch, onToggleMaster, serverIp }) => {
   const [copied, setCopied] = React.useState(false);
   
   const handleCopyIp = () => {
@@ -48,14 +47,6 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTa
               </span>
               <span className="text-xs font-mono font-black text-amber-900">{serverIp}</span>
             </div>
-
-            <button 
-              onClick={onLock}
-              className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
-              title="手动锁屏"
-            >
-              <Lock size={20} />
-            </button>
 
             <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-full">
               <button 

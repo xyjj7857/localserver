@@ -98,8 +98,6 @@ export interface AppSettings {
   supabase: SupabaseConfig;
   scanner: ScannerParams;
   order: OrderParams;
-  lockPassword: string;
-  lockTimeout: number; // minutes
   masterSwitch: boolean;
   ipSelection: 'local' | 'proxy';
   email: {
@@ -119,7 +117,7 @@ export interface AppSettings {
 export interface LogEntry {
   id: string;
   timestamp: number;
-  type: 'scanner' | 'order' | 'system' | 'error' | 'warning';
+  type: 'scanner' | 'order' | 'system' | 'error';
   module: string;
   message: string;
   details?: any;

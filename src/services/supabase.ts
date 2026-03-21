@@ -153,10 +153,7 @@ export class SupabaseService {
       email_balance_limit_enabled: s.email.balanceLimitEnabled,
       email_balance_limit: s.email.balanceLimit,
       email_reverse_limit_enabled: s.email.reverseOrderLimitEnabled,
-      email_reverse_limit: s.email.reverseOrderLimit,
-      
-      lock_password: s.lockPassword,
-      lock_timeout: s.lockTimeout
+      email_reverse_limit: s.email.reverseOrderLimit
     };
   }
 
@@ -171,8 +168,6 @@ export class SupabaseService {
       ...current,
       masterSwitch: row.master_switch ?? current.masterSwitch,
       ipSelection: (row.ip_selection as any) ?? current.ipSelection,
-      lockPassword: row.lock_password ?? current.lockPassword,
-      lockTimeout: this.toNum(row.lock_timeout, current.lockTimeout),
       binance: {
         ...current.binance,
         apiKey: row.binance_api_key ?? current.binance.apiKey,

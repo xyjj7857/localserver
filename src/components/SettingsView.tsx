@@ -783,26 +783,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, ip
           </div>
         </div>
       </section>
-
-      {/* Security Settings */}
-      <section className="bg-white p-6 rounded-xl shadow-sm space-y-4">
-        <h3 className="text-lg font-semibold border-l-4 border-indigo-500 pl-3">安全设置</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <label className="text-sm text-gray-500">锁屏密码</label>
-            <input 
-              type={showSecrets ? "text" : "password"}
-              value={localSettings.lockPassword}
-              onChange={(e) => handleChange('lockPassword', '', e.target.value)}
-              className="w-full p-2 border rounded-lg"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-sm text-gray-500">自动锁屏时长 (分钟)</label>
-            <input type="number" value={isNaN(localSettings.lockTimeout) ? '' : localSettings.lockTimeout} onChange={(e) => handleChange('lockTimeout', '', parseInt(e.target.value))} className="w-full p-2 border rounded-lg" />
-          </div>
-        </div>
-      </section>
     </div>
   );
 };

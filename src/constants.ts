@@ -86,8 +86,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     kClosedWindowStart: 1,
     kClosedWindowEnd: 4,
   },
-  lockPassword: "Flzx3qc",
-  lockTimeout: 60,
   masterSwitch: true,
   ipSelection: 'proxy',
   email: {

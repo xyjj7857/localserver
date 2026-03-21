@@ -5,7 +5,6 @@ import { Dashboard } from './components/Dashboard';
 import { ScannerView } from './components/ScannerView';
 import { LogView } from './components/LogView';
 import { SettingsView } from './components/SettingsView';
-import { LockScreen } from './components/LockScreen';
 import { StorageService } from './services/storage';
 import { StrategyEngine } from './services/strategy';
 import { BinanceService } from './services/binance';
@@ -19,7 +18,6 @@ export default function App() {
     return s;
   });
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [isLocked, setIsLocked] = useState(true);
   const [logs, setLogs] = useState<LogEntry[]>(StorageService.getLogs());
   const [ip, setIp] = useState('加载中...');
   const [localIp, setLocalIp] = useState('加载中...');
@@ -58,7 +56,6 @@ export default function App() {
   });
 
   const engineRef = useRef<StrategyEngine | null>(null);
-  const lockTimerRef = useRef<any>(null);
 
   // Auto-pull from Supabase on mount
   useEffect(() => {
@@ -150,28 +147,6 @@ export default function App() {
     };
   }, []);
 
-  // Handle Lock Timeout
-  useEffect(() => {
-    const resetLockTimer = () => {
-      if (lockTimerRef.current) clearTimeout(lockTimerRef.current);
-      lockTimerRef.current = setTimeout(() => {
-        setIsLocked(true);
-      }, settings.lockTimeout * 60000);
-    };
-
-    if (!isLocked) {
-      resetLockTimer();
-      window.addEventListener('mousemove', resetLockTimer);
-      window.addEventListener('keydown', resetLockTimer);
-    }
-
-    return () => {
-      window.removeEventListener('mousemove', resetLockTimer);
-      window.removeEventListener('keydown', resetLockTimer);
-      if (lockTimerRef.current) clearTimeout(lockTimerRef.current);
-    };
-  }, [isLocked, settings.lockTimeout]);
-
   const handleSaveSettings = (newSettings: AppSettings) => {
     setSettings(newSettings);
     StorageService.saveSettings(newSettings);
@@ -212,37 +187,25 @@ export default function App() {
   };
 
   return (
-    <div className="relative min-h-screen bg-gray-50">
-      {/* 策略引擎在后台始终渲染，即使锁屏 */}
-      <Layout 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab}
-        masterSwitch={engineState.masterSwitch}
-        onToggleMaster={handleToggleMaster}
-        onLock={() => setIsLocked(true)}
-        serverIp={ip}
-      >
-        {activeTab === 'dashboard' && <Dashboard state={engineState} ip={ip} localIp={localIp} />}
-        {activeTab === 'scanner' && (
-          <ScannerView 
-            state={engineState} 
-            onForceStage0={() => engineRef.current?.forceRunStage0()}
-            onForceStage0P={() => engineRef.current?.forceRunStage0P()}
-            onForceStage1={() => engineRef.current?.forceRunStage1()}
-            onForceStage2={() => engineRef.current?.forceRunStage2()}
-          />
-        )}
-        {activeTab === 'logs' && <LogView logs={logs} onClear={handleClearLogs} />}
-        {activeTab === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} ip={ip} onRefreshIp={refreshIp} />}
-      </Layout>
-
-      {/* 锁屏层：全屏覆盖 */}
-      {isLocked && (
-        <LockScreen 
-          correctPassword={settings.lockPassword} 
-          onUnlock={() => setIsLocked(false)} 
+    <Layout 
+      activeTab={activeTab} 
+      setActiveTab={setActiveTab}
+      masterSwitch={engineState.masterSwitch}
+      onToggleMaster={handleToggleMaster}
+      serverIp={ip}
+    >
+      {activeTab === 'dashboard' && <Dashboard state={engineState} ip={ip} localIp={localIp} />}
+      {activeTab === 'scanner' && (
+        <ScannerView 
+          state={engineState} 
+          onForceStage0={() => engineRef.current?.forceRunStage0()}
+          onForceStage0P={() => engineRef.current?.forceRunStage0P()}
+          onForceStage1={() => engineRef.current?.forceRunStage1()}
+          onForceStage2={() => engineRef.current?.forceRunStage2()}
         />
       )}
-    </div>
+      {activeTab === 'logs' && <LogView logs={logs} onClear={handleClearLogs} />}
+      {activeTab === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} ip={ip} onRefreshIp={refreshIp} />}
+    </Layout>
   );
 }
